@@ -170,7 +170,7 @@ def _compute_release_gap(trucks: list[Truck], schedule_insights: ScheduleInsight
             gap_count=hold_count,
             message=(
                 f"{hold_count} kit(s) are blocked by engineering release; "
-                f"oldest hold is {oldest_hold.hold_days} day(s)."
+                f"oldest hold is {oldest_hold.hold_weeks:.1f} week(s)."
             ),
         )
 
@@ -189,7 +189,7 @@ def _compute_release_gap(trucks: list[Truck], schedule_insights: ScheduleInsight
             message=f"{body_gap_count} Body kit(s) not released.",
         )
 
-    return ReleaseGapWarning(is_warning=False, gap_count=0, message="Main kit releases are covered.")
+    return ReleaseGapWarning(is_warning=False, gap_count=0, message="Body releases are covered.")
 
 
 def _build_attention_items(
@@ -209,7 +209,8 @@ def _build_attention_items(
                 title="Engineering release is holding work start",
                 detail=(
                     f"{len(schedule_insights.release_hold_items)} kit(s) past planned start; "
-                    f"oldest {oldest.hold_days} day(s) ({oldest.truck_number} {oldest.kit_name})."
+                    f"oldest {oldest.hold_weeks:.1f} week(s) "
+                    f"({oldest.truck_number} {oldest.kit_name})."
                 ),
             )
         )
@@ -218,7 +219,7 @@ def _build_attention_items(
         items.append(
             AttentionItem(
                 priority=100,
-                title="Next main kit not released",
+                title="Next Body not released",
                 detail=next_main_kit_risk.message,
             )
         )

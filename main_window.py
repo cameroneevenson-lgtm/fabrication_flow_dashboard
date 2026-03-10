@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import sqlite3
+from datetime import date
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -28,6 +29,43 @@ from database import FabricationDatabase
 from metrics import DashboardMetrics, compute_dashboard_metrics, sort_trucks_natural
 from models import MAGNITUDE_VALUES, RELEASE_STATES, STAGE_ORDER, Truck, TruckKit
 from schedule import ScheduleInsights, build_schedule_insights
+
+
+def _fmt_week(value: float) -> str:
+    return f"W{value:.1f}"
+
+
+class WrappingListWidget(QListWidget):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setWordWrap(True)
+        self.setUniformItemSizes(False)
+
+    def add_wrapped_item(self, text: str, color: str) -> None:
+        item = QListWidgetItem()
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        label.setStyleSheet(f"padding: 6px 8px; color: {color};")
+        self.addItem(item)
+        self.setItemWidget(item, label)
+        self._refresh_item_heights()
+
+    def resizeEvent(self, event):  # type: ignore[override]
+        super().resizeEvent(event)
+        self._refresh_item_heights()
+
+    def _refresh_item_heights(self) -> None:
+        target_width = max(120, self.viewport().width() - 10)
+        for index in range(self.count()):
+            item = self.item(index)
+            widget = self.itemWidget(item)
+            if widget is None:
+                continue
+            widget.setFixedWidth(target_width)
+            widget.adjustSize()
+            item.setSizeHint(widget.sizeHint())
 
 
 class KitEditDialog(QDialog):
@@ -115,6 +153,7 @@ class MainWindow(QMainWindow):
         controls.addStretch(1)
 
         self._status_label = QLabel("")
+        self._status_label.setWordWrap(True)
         self._status_label.setStyleSheet("color: #475569;")
         controls.addWidget(self._status_label)
 
@@ -128,6 +167,7 @@ class MainWindow(QMainWindow):
 
         self._board_widget = BoardWidget()
         self._board_widget.kit_selected.connect(self._on_kit_selected)
+        self._board_widget.kit_stage_drop_requested.connect(self._on_kit_stage_drop_requested)
         middle_layout.addWidget(self._board_widget, 4)
 
         right_column = QWidget()
@@ -148,7 +188,8 @@ class MainWindow(QMainWindow):
         self.refresh_view()
 
     def refresh_view(self) -> None:
-        self._trucks = sort_trucks_natural(self.database.load_trucks_with_kits(active_only=True))
+        loaded_trucks = sort_trucks_natural(self.database.load_trucks_with_kits(active_only=True))
+        self._trucks = [truck for truck in loaded_trucks if not self._is_truck_complete(truck)]
         self._schedule_insights = build_schedule_insights(self._trucks)
 
         self._kit_index = {}
@@ -159,8 +200,8 @@ class MainWindow(QMainWindow):
 
         self._board_widget.set_data(
             self._trucks,
-            truck_planned_start_by_id=self._schedule_insights.truck_planned_start_by_id,
-            kit_release_hold_days_by_id=self._schedule_insights.kit_release_hold_days_by_id,
+            truck_planned_start_week_by_id=self._schedule_insights.truck_planned_start_week_by_id,
+            kit_release_hold_weeks_by_id=self._schedule_insights.kit_release_hold_weeks_by_id,
         )
 
         metrics = compute_dashboard_metrics(self._trucks, schedule_insights=self._schedule_insights)
@@ -170,7 +211,8 @@ class MainWindow(QMainWindow):
 
         hold_count = len(self._schedule_insights.release_hold_items)
         self._status_label.setText(
-            f"Trucks: {len(self._trucks)} | Active Kits: {len(self._kit_index)} | Engineering Holds: {hold_count}"
+            f"Week: {_fmt_week(self._schedule_insights.current_week)} | Trucks: {len(self._trucks)} "
+            f"| Active Kits: {len(self._kit_index)} | Engineering Holds: {hold_count}"
         )
 
     def _on_add_truck(self) -> None:
@@ -187,8 +229,29 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Invalid Input", "Truck number is required.")
             return
 
+        day_zero_text, day_zero_accepted = QInputDialog.getText(
+            self,
+            "Add Truck",
+            "Calendar Day Zero (YYYY-MM-DD):",
+        )
+        if not day_zero_accepted:
+            return
+
+        clean_day_zero = day_zero_text.strip()
+        if not clean_day_zero:
+            QMessageBox.warning(self, "Invalid Input", "Calendar Day Zero is required.")
+            return
+
         try:
-            self.database.create_truck(clean_truck_number)
+            parsed_day_zero = date.fromisoformat(clean_day_zero)
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Input", "Calendar Day Zero must be YYYY-MM-DD.")
+            return
+
+        notes = f"Calendar Day Zero: {parsed_day_zero.isoformat()}"
+
+        try:
+            self.database.create_truck(clean_truck_number, notes=notes)
         except sqlite3.IntegrityError:
             QMessageBox.warning(
                 self,
@@ -201,7 +264,6 @@ class MainWindow(QMainWindow):
             return
 
         self.refresh_view()
-
     def _on_kit_selected(self, kit_id: int) -> None:
         result = self._kit_index.get(kit_id)
         if not result:
@@ -223,6 +285,50 @@ class MainWindow(QMainWindow):
         )
         self.refresh_view()
 
+    def _on_kit_stage_drop_requested(self, kit_id: int, target_stage: str) -> None:
+        result = self._kit_index.get(kit_id)
+        if not result:
+            return
+        if target_stage not in STAGE_ORDER:
+            return
+
+        truck, kit = result
+        current_idx = STAGE_ORDER.index(kit.current_stage)
+        target_idx = STAGE_ORDER.index(target_stage)
+        if target_idx <= current_idx:
+            if target_idx < current_idx:
+                self.statusBar().showMessage(
+                    "Drag-and-drop only moves kits forward. Use kit edit to move backward.",
+                    4000,
+                )
+            return
+
+        release_state = kit.release_state
+        if release_state == "not_released" and target_stage != "release":
+            # Moving into fabrication implies engineering has at least partially released.
+            release_state = "partial"
+
+        self.database.update_truck_kit(
+            kit_id=kit_id,
+            release_state=release_state,
+            current_stage=target_stage,
+            magnitude=kit.magnitude,
+            blocker=kit.blocker,
+            is_active=kit.is_active,
+        )
+        self.refresh_view()
+        self.statusBar().showMessage(
+            f"Moved {truck.truck_number} {kit.kit_name} to {target_stage.upper()}",
+            3000,
+        )
+
+    @staticmethod
+    def _is_truck_complete(truck: Truck) -> bool:
+        active_kits = [kit for kit in truck.kits if kit.is_active]
+        if not active_kits:
+            return False
+        return all(str(kit.current_stage).strip().lower() == "welded" for kit in active_kits)
+
     def _build_health_strip(self) -> QWidget:
         strip = QWidget()
         layout = QHBoxLayout(strip)
@@ -230,7 +336,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
 
         self._tile_widgets = {
-            "next_main": self._create_tile("Next Main Kit Risk"),
+            "next_main": self._create_tile("Next Body Risk"),
             "bend_buffer": self._create_tile("Bend Buffer Health"),
             "weld_feed": self._create_tile("Weld Feed Status"),
             "release_gap": self._create_tile("Release Gap Warning"),
@@ -256,14 +362,22 @@ class MainWindow(QMainWindow):
 
         layout = QVBoxLayout(panel)
         title = QLabel("Master Schedule Reference")
+        title.setWordWrap(True)
         title.setStyleSheet("font-size: 16px; font-weight: 700; color: #0F172A;")
         layout.addWidget(title)
 
         self._schedule_start_label = QLabel("")
+        self._schedule_start_label.setWordWrap(True)
         self._schedule_start_label.setStyleSheet("font-size: 12px; color: #334155;")
         layout.addWidget(self._schedule_start_label)
 
+        self._current_week_label = QLabel("")
+        self._current_week_label.setWordWrap(True)
+        self._current_week_label.setStyleSheet("font-size: 12px; color: #334155;")
+        layout.addWidget(self._current_week_label)
+
         self._truck_lag_label = QLabel("")
+        self._truck_lag_label.setWordWrap(True)
         self._truck_lag_label.setStyleSheet("font-size: 12px; color: #334155;")
         layout.addWidget(self._truck_lag_label)
 
@@ -294,10 +408,11 @@ class MainWindow(QMainWindow):
 
         layout = QVBoxLayout(panel)
         title = QLabel("Attention")
+        title.setWordWrap(True)
         title.setStyleSheet("font-size: 16px; font-weight: 700; color: #0F172A;")
         layout.addWidget(title)
 
-        self._attention_list = QListWidget()
+        self._attention_list = WrappingListWidget()
         self._attention_list.setStyleSheet(
             """
             QListWidget {
@@ -330,9 +445,11 @@ class MainWindow(QMainWindow):
         layout.setSpacing(4)
 
         title_label = QLabel(title)
+        title_label.setWordWrap(True)
         title_label.setStyleSheet("font-size: 12px; color: #334155;")
 
         value_label = QLabel("-")
+        value_label.setWordWrap(True)
         value_label.setStyleSheet("font-size: 20px; font-weight: 700; color: #0F172A;")
 
         detail_label = QLabel("")
@@ -347,17 +464,21 @@ class MainWindow(QMainWindow):
 
     def _update_schedule_panel(self) -> None:
         if not self._schedule_insights:
-            self._schedule_start_label.setText("Project Start (Master): -")
+            self._schedule_start_label.setText("Project Start: Day Zero (W0.0)")
+            self._current_week_label.setText("Current Schedule Week: -")
             self._truck_lag_label.setText("Truck Start Lag: -")
             self._hold_summary_label.setText("")
             self._standards_label.setText("")
             return
 
         self._schedule_start_label.setText(
-            f"Project Start (Master): {self._schedule_insights.master_start_date.isoformat()}"
+            f"Project Start Anchor: Day Zero ({_fmt_week(self._schedule_insights.day_zero_week)})"
+        )
+        self._current_week_label.setText(
+            f"Current Schedule Week: {_fmt_week(self._schedule_insights.current_week)}"
         )
         self._truck_lag_label.setText(
-            f"Standard Truck Start Lag: {self._schedule_insights.truck_start_lag_days} day(s)"
+            f"Standard Truck Start Lag: {self._schedule_insights.truck_start_lag_weeks:.1f} week(s)"
         )
 
         hold_items = self._schedule_insights.release_hold_items
@@ -365,7 +486,7 @@ class MainWindow(QMainWindow):
             oldest = hold_items[0]
             self._hold_summary_label.setText(
                 "Engineering release hold: "
-                f"{len(hold_items)} kit(s) blocked; oldest {oldest.hold_days} day(s) "
+                f"{len(hold_items)} kit(s) blocked; oldest {oldest.hold_weeks:.1f} week(s) "
                 f"late ({oldest.truck_number} {oldest.kit_name})."
             )
             self._hold_summary_label.setStyleSheet("font-size: 12px; font-weight: 700; color: #B91C1C;")
@@ -376,7 +497,7 @@ class MainWindow(QMainWindow):
         lines = ["Standard Lag / Duration (from truck planned start):"]
         for standard in self._schedule_insights.standards:
             lines.append(
-                f"{standard.kit_name}: +{standard.lag_days}d lag, {standard.duration_days}d duration"
+                f"{standard.kit_name}: +{standard.lag_weeks:.1f}w lag, {standard.duration_weeks:.1f}w duration"
             )
         self._standards_label.setText("\n".join(lines))
 
@@ -446,9 +567,11 @@ class MainWindow(QMainWindow):
         self._attention_list.clear()
         for index, item in enumerate(metrics.attention_items, start=1):
             text = f"{index}. {item.title}: {item.detail}"
-            row = QListWidgetItem(text)
             if item.priority >= 90:
-                row.setForeground(Qt.red)
+                color = "#B91C1C"
             elif item.priority >= 70:
-                row.setForeground(Qt.darkYellow)
-            self._attention_list.addItem(row)
+                color = "#A16207"
+            else:
+                color = "#1F2937"
+            self._attention_list.add_wrapped_item(text=text, color=color)
+
