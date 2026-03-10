@@ -1,24 +1,29 @@
 ﻿from __future__ import annotations
 
+import os
+import re
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
+from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDateEdit,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -27,12 +32,18 @@ from PySide6.QtWidgets import (
 from board_widget import BoardWidget
 from database import FabricationDatabase
 from metrics import DashboardMetrics, compute_dashboard_metrics, sort_trucks_natural
-from models import MAGNITUDE_VALUES, RELEASE_STATES, STAGE_ORDER, Truck, TruckKit
+from models import RELEASE_STATES, STAGE_ORDER, Truck, TruckKit
 from schedule import ScheduleInsights, build_schedule_insights
 
 
 def _fmt_week(value: float) -> str:
     return f"W{value:.1f}"
+
+
+def _current_week_of_label() -> str:
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+    return monday.strftime("%b %d, %Y")
 
 
 class WrappingListWidget(QListWidget):
@@ -69,11 +80,14 @@ class WrappingListWidget(QListWidget):
 
 
 class KitEditDialog(QDialog):
+    PDF_LOOKUP_ROOT = Path(r"W:\LASER\For Battleshield Fabrication")
+
     def __init__(self, truck_number: str, kit: TruckKit, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle(f"Edit Kit - {kit.kit_name}")
         self.setModal(True)
-        self.resize(420, 260)
+        self.resize(520, 420)
+        self._truck_number = str(truck_number or "").strip()
 
         self._release_combo = QComboBox()
         self._release_combo.addItems(RELEASE_STATES)
@@ -83,11 +97,12 @@ class KitEditDialog(QDialog):
         self._stage_combo.addItems(STAGE_ORDER)
         self._stage_combo.setCurrentText(kit.current_stage)
 
-        self._magnitude_combo = QComboBox()
-        self._magnitude_combo.addItems(MAGNITUDE_VALUES)
-        self._magnitude_combo.setCurrentText(kit.magnitude)
-
         self._blocker_input = QLineEdit(kit.blocker)
+        self._pdf_links_input = QPlainTextEdit()
+        self._pdf_links_input.setPlaceholderText("One PDF path or URL per line")
+        self._pdf_links_input.setPlainText(kit.pdf_links.strip())
+        self._pdf_links_input.setMinimumHeight(100)
+
         self._active_checkbox = QCheckBox("Kit is active")
         self._active_checkbox.setChecked(kit.is_active)
 
@@ -96,12 +111,17 @@ class KitEditDialog(QDialog):
         form.addRow("Kit", QLabel(kit.kit_name))
         form.addRow("Release State", self._release_combo)
         form.addRow("Current Stage", self._stage_combo)
-        form.addRow("Magnitude", self._magnitude_combo)
         form.addRow("Blocker", self._blocker_input)
+        form.addRow("PDF Links", self._pdf_links_input)
         form.addRow("", self._active_checkbox)
 
         remove_button = QPushButton("Remove Kit (Soft)")
         remove_button.clicked.connect(self._mark_removed)
+
+        open_pdf_button = QPushButton("Open PDF Link(s)")
+        open_pdf_button.clicked.connect(self._open_pdf_links)
+        select_pdf_button = QPushButton("Select PDF File(s)")
+        select_pdf_button.clicked.connect(self._select_pdf_links)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -109,20 +129,366 @@ class KitEditDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
-        layout.addWidget(remove_button, alignment=Qt.AlignLeft)
+
+        actions_layout = QHBoxLayout()
+        actions_layout.addWidget(remove_button)
+        actions_layout.addWidget(open_pdf_button)
+        actions_layout.addWidget(select_pdf_button)
+        actions_layout.addStretch(1)
+
+        layout.addLayout(actions_layout)
         layout.addWidget(buttons)
 
     def _mark_removed(self) -> None:
         self._active_checkbox.setChecked(False)
 
+    def _normalized_pdf_links(self) -> list[str]:
+        values: list[str] = []
+        raw_text = self._pdf_links_input.toPlainText().replace(";", "\n")
+        for part in raw_text.splitlines():
+            clean = part.strip().strip('"')
+            if clean:
+                values.append(clean)
+        return values
+
+    def _open_pdf_links(self) -> None:
+        links = self._normalized_pdf_links()
+        if not links:
+            QMessageBox.information(self, "No Links", "Add at least one PDF path or URL first.")
+            return
+
+        if not hasattr(os, "startfile"):
+            QMessageBox.warning(self, "Unsupported", "Opening external files is not supported on this platform.")
+            return
+
+        failed: list[str] = []
+        for link in links:
+            try:
+                os.startfile(link)  # type: ignore[attr-defined]
+            except OSError:
+                failed.append(link)
+
+        if failed:
+            sample = "\n".join(failed[:3])
+            QMessageBox.warning(
+                self,
+                "Open Failed",
+                "Could not open one or more links:\n" f"{sample}",
+            )
+
+    @staticmethod
+    def _as_local_path(link: str) -> Path | None:
+        text = str(link or "").strip().strip('"')
+        if not text:
+            return None
+        # URLs are opened via the existing "Open PDF Link(s)" action.
+        if "://" in text:
+            return None
+        path = Path(text)
+        if not path.is_absolute():
+            path = (Path.cwd() / path).resolve()
+        else:
+            path = path.resolve()
+        return path
+
+    def _default_pdf_lookup_dir(self) -> str:
+        root = self.PDF_LOOKUP_ROOT
+        if not root.exists():
+            return str(Path.cwd())
+
+        match = re.search(r"(F\d+)", self._truck_number, re.IGNORECASE)
+        truck_code = match.group(1).upper() if match else ""
+        if truck_code:
+            direct = root / truck_code
+            if direct.exists():
+                return str(direct)
+            matches = sorted(path for path in root.glob(f"{truck_code}*") if path.is_dir())
+            if matches:
+                return str(matches[0])
+
+        fallback_matches = sorted(path for path in root.glob("F*") if path.is_dir())
+        if fallback_matches:
+            return str(fallback_matches[0])
+        return str(root)
+
+    def _select_pdf_links(self) -> None:
+        existing = self._normalized_pdf_links()
+        start_dir = self._default_pdf_lookup_dir()
+        for value in existing:
+            local_path = self._as_local_path(value)
+            if local_path is None:
+                continue
+            candidate = local_path if local_path.is_dir() else local_path.parent
+            if candidate.exists():
+                start_dir = str(candidate)
+                break
+
+        selected_paths, _filter_used = QFileDialog.getOpenFileNames(
+            self,
+            "Select PDF File(s)",
+            start_dir,
+            "PDF Files (*.pdf);;All Files (*.*)",
+        )
+        if not selected_paths:
+            return
+
+        merged: list[str] = []
+        seen: set[str] = set()
+        for value in existing + selected_paths:
+            clean = str(value).strip().strip('"')
+            if not clean:
+                continue
+            key = clean.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(clean)
+
+        self._pdf_links_input.setPlainText("\n".join(merged))
+
     def get_values(self) -> dict[str, object]:
         return {
             "release_state": self._release_combo.currentText(),
             "current_stage": self._stage_combo.currentText(),
-            "magnitude": self._magnitude_combo.currentText(),
             "blocker": self._blocker_input.text(),
+            "pdf_links": "\n".join(self._normalized_pdf_links()),
             "is_active": self._active_checkbox.isChecked(),
         }
+
+
+class AddTruckDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Add Truck")
+        self.setModal(True)
+        self.resize(420, 220)
+
+        self._truck_number_input = QLineEdit()
+        self._truck_number_input.setPlaceholderText("Truck number")
+
+        self._client_input = QLineEdit()
+        self._client_input.setPlaceholderText("Client")
+
+        self._planned_start_input = QDateEdit()
+        self._planned_start_input.setCalendarPopup(True)
+        self._planned_start_input.setDisplayFormat("yyyy-MM-dd")
+        self._planned_start_input.setDate(QDate.currentDate())
+
+        form = QFormLayout()
+        form.addRow("Truck F Number", self._truck_number_input)
+        form.addRow("Client", self._client_input)
+        form.addRow("Day Zero", self._planned_start_input)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+
+    def get_values(self) -> tuple[str, str, str]:
+        truck_number = self._truck_number_input.text().strip()
+        client = self._client_input.text().strip()
+        planned_start_date = self._planned_start_input.date().toString("yyyy-MM-dd")
+        return (truck_number, client, planned_start_date)
+
+
+class TruckPlanDialog(QDialog):
+    def __init__(self, trucks: list[Truck], parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Manage Truck Plan")
+        self.setModal(True)
+        self.resize(560, 460)
+
+        self._trucks: list[Truck] = [truck for truck in trucks if truck.id is not None]
+        self._planned_start_dates_by_id: dict[int, str] = {
+            int(truck.id): str(truck.planned_start_date or "").strip()
+            for truck in self._trucks
+            if truck.id is not None
+        }
+        self._clients_by_id: dict[int, str] = {
+            int(truck.id): str(truck.client or "").strip()
+            for truck in self._trucks
+            if truck.id is not None
+        }
+        self._is_visible_by_id: dict[int, bool] = {
+            int(truck.id): bool(truck.is_visible)
+            for truck in self._trucks
+            if truck.id is not None
+        }
+
+        self._truck_list = QListWidget()
+        self._truck_list.currentRowChanged.connect(self._on_selected_row_changed)
+
+        self._move_up_button = QPushButton("Move Up")
+        self._move_up_button.clicked.connect(lambda: self._move_selected(-1))
+        self._move_down_button = QPushButton("Move Down")
+        self._move_down_button.clicked.connect(lambda: self._move_selected(1))
+
+        self._planned_start_input = QDateEdit()
+        self._planned_start_input.setCalendarPopup(True)
+        self._planned_start_input.setDisplayFormat("yyyy-MM-dd")
+        self._planned_start_input.setDate(QDate.currentDate())
+        self._planned_start_input.dateChanged.connect(self._on_planned_start_changed)
+
+        clear_date_button = QPushButton("Clear Date")
+        clear_date_button.clicked.connect(self._on_clear_date)
+
+        self._client_input = QLineEdit()
+        self._client_input.textChanged.connect(self._on_client_changed)
+        self._is_visible_checkbox = QCheckBox("Show truck on main board")
+        self._is_visible_checkbox.toggled.connect(self._on_visibility_toggled)
+
+        list_controls = QVBoxLayout()
+        list_controls.addWidget(self._move_up_button)
+        list_controls.addWidget(self._move_down_button)
+        list_controls.addStretch(1)
+
+        list_row = QHBoxLayout()
+        list_row.addWidget(self._truck_list, 1)
+        list_row.addLayout(list_controls)
+
+        date_form = QFormLayout()
+        date_form.addRow("Selected Client", self._client_input)
+        date_form.addRow("Selected Day Zero", self._planned_start_input)
+        date_form.addRow("", self._is_visible_checkbox)
+        date_form.addRow("", clear_date_button)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(list_row)
+        layout.addLayout(date_form)
+        layout.addWidget(buttons)
+
+        self._refresh_truck_list()
+
+    def _truck_label_text(self, truck: Truck, index: int) -> str:
+        truck_id = int(truck.id or 0)
+        planned = self._planned_start_dates_by_id.get(truck_id, "").strip()
+        client_text = self._clients_by_id.get(truck_id, "").strip() or "-"
+        visible_text = "Yes" if self._is_visible_by_id.get(truck_id, True) else "No"
+        day_zero_text = planned if planned else "-"
+        return (
+            f"{index + 1}. {truck.truck_number} | Client: {client_text} | Day Zero: {day_zero_text} "
+            f"| Main View: {visible_text}"
+        )
+
+    def _refresh_truck_list(self, selected_row: int | None = None) -> None:
+        current_row = self._truck_list.currentRow() if selected_row is None else selected_row
+        self._truck_list.blockSignals(True)
+        self._truck_list.clear()
+        for index, truck in enumerate(self._trucks):
+            self._truck_list.addItem(self._truck_label_text(truck, index))
+        self._truck_list.blockSignals(False)
+
+        if self._truck_list.count() == 0:
+            self._move_up_button.setEnabled(False)
+            self._move_down_button.setEnabled(False)
+            self._planned_start_input.setEnabled(False)
+            self._client_input.setEnabled(False)
+            self._is_visible_checkbox.setEnabled(False)
+            return
+
+        target_row = max(0, min(current_row, self._truck_list.count() - 1))
+        self._truck_list.setCurrentRow(target_row)
+        self._on_selected_row_changed(target_row)
+
+    def _current_truck(self) -> Truck | None:
+        row = self._truck_list.currentRow()
+        if row < 0 or row >= len(self._trucks):
+            return None
+        return self._trucks[row]
+
+    def _move_selected(self, direction: int) -> None:
+        current_row = self._truck_list.currentRow()
+        if current_row < 0:
+            return
+        target_row = current_row + direction
+        if target_row < 0 or target_row >= len(self._trucks):
+            return
+        self._trucks[current_row], self._trucks[target_row] = self._trucks[target_row], self._trucks[current_row]
+        self._refresh_truck_list(selected_row=target_row)
+
+    def _on_selected_row_changed(self, row: int) -> None:
+        if row < 0 or row >= len(self._trucks):
+            self._move_up_button.setEnabled(False)
+            self._move_down_button.setEnabled(False)
+            self._planned_start_input.setEnabled(False)
+            self._client_input.setEnabled(False)
+            self._is_visible_checkbox.setEnabled(False)
+            return
+
+        self._move_up_button.setEnabled(row > 0)
+        self._move_down_button.setEnabled(row < len(self._trucks) - 1)
+        self._planned_start_input.setEnabled(True)
+        self._client_input.setEnabled(True)
+        self._is_visible_checkbox.setEnabled(True)
+
+        truck = self._trucks[row]
+        truck_id = int(truck.id or 0)
+        planned_start = self._planned_start_dates_by_id.get(truck_id, "").strip()
+        client = self._clients_by_id.get(truck_id, "").strip()
+        parsed = QDate.fromString(planned_start, "yyyy-MM-dd")
+        if not parsed.isValid():
+            parsed = QDate.currentDate()
+        self._client_input.blockSignals(True)
+        self._client_input.setText(client)
+        self._client_input.blockSignals(False)
+        self._planned_start_input.blockSignals(True)
+        self._planned_start_input.setDate(parsed)
+        self._planned_start_input.blockSignals(False)
+        self._is_visible_checkbox.blockSignals(True)
+        self._is_visible_checkbox.setChecked(self._is_visible_by_id.get(truck_id, True))
+        self._is_visible_checkbox.blockSignals(False)
+
+    def _on_planned_start_changed(self, value: QDate) -> None:
+        truck = self._current_truck()
+        if truck is None or truck.id is None:
+            return
+        self._planned_start_dates_by_id[int(truck.id)] = value.toString("yyyy-MM-dd")
+        self._refresh_current_item_label()
+
+    def _on_clear_date(self) -> None:
+        truck = self._current_truck()
+        if truck is None or truck.id is None:
+            return
+        self._planned_start_dates_by_id[int(truck.id)] = ""
+        self._refresh_current_item_label()
+
+    def _on_client_changed(self, value: str) -> None:
+        truck = self._current_truck()
+        if truck is None or truck.id is None:
+            return
+        self._clients_by_id[int(truck.id)] = str(value or "").strip()
+        self._refresh_current_item_label()
+
+    def _on_visibility_toggled(self, checked: bool) -> None:
+        truck = self._current_truck()
+        if truck is None or truck.id is None:
+            return
+        self._is_visible_by_id[int(truck.id)] = bool(checked)
+        self._refresh_current_item_label()
+
+    def _refresh_current_item_label(self) -> None:
+        row = self._truck_list.currentRow()
+        if row < 0 or row >= len(self._trucks):
+            return
+        self._truck_list.item(row).setText(self._truck_label_text(self._trucks[row], row))
+
+    def get_updates(self) -> list[tuple[int, int, str, str, bool]]:
+        updates: list[tuple[int, int, str, str, bool]] = []
+        for index, truck in enumerate(self._trucks, start=1):
+            if truck.id is None:
+                continue
+            planned_start = self._planned_start_dates_by_id.get(int(truck.id), "").strip()
+            client = self._clients_by_id.get(int(truck.id), "").strip()
+            is_visible = self._is_visible_by_id.get(int(truck.id), True)
+            updates.append((int(truck.id), index, planned_start, client, is_visible))
+        return updates
 
 
 class MainWindow(QMainWindow):
@@ -133,6 +499,7 @@ class MainWindow(QMainWindow):
         self._trucks: list[Truck] = []
         self._kit_index: dict[int, tuple[Truck, TruckKit]] = {}
         self._schedule_insights: ScheduleInsights | None = None
+        self._week_lens_enabled = True
 
         self.setWindowTitle("Fabrication Flow Dashboard")
         self.resize(1600, 900)
@@ -146,9 +513,15 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         add_truck_button = QPushButton("Add Truck")
         add_truck_button.clicked.connect(self._on_add_truck)
+        plan_trucks_button = QPushButton("Manage Truck Plan")
+        plan_trucks_button.clicked.connect(self._on_manage_truck_plan)
+        wipe_db_button = QPushButton("Wipe DB (Dev)")
+        wipe_db_button.clicked.connect(self._on_wipe_db_clicked)
         refresh_button = QPushButton("Refresh")
         refresh_button.clicked.connect(self.refresh_view)
         controls.addWidget(add_truck_button)
+        controls.addWidget(plan_trucks_button)
+        controls.addWidget(wipe_db_button)
         controls.addWidget(refresh_button)
         controls.addStretch(1)
 
@@ -166,6 +539,7 @@ class MainWindow(QMainWindow):
         middle_layout.setSpacing(10)
 
         self._board_widget = BoardWidget()
+        self._board_widget.set_week_lens_enabled(self._week_lens_enabled)
         self._board_widget.kit_selected.connect(self._on_kit_selected)
         self._board_widget.kit_stage_drop_requested.connect(self._on_kit_stage_drop_requested)
         middle_layout.addWidget(self._board_widget, 4)
@@ -175,10 +549,8 @@ class MainWindow(QMainWindow):
         right_column_layout.setContentsMargins(0, 0, 0, 0)
         right_column_layout.setSpacing(10)
 
-        schedule_panel = self._build_schedule_panel()
         attention_panel = self._build_attention_panel()
 
-        right_column_layout.addWidget(schedule_panel)
         right_column_layout.addWidget(attention_panel, 1)
 
         middle_layout.addWidget(right_column, 1)
@@ -189,8 +561,11 @@ class MainWindow(QMainWindow):
 
     def refresh_view(self) -> None:
         loaded_trucks = sort_trucks_natural(self.database.load_trucks_with_kits(active_only=True))
-        self._trucks = [truck for truck in loaded_trucks if not self._is_truck_complete(truck)]
+        self._trucks = [
+            truck for truck in loaded_trucks if truck.is_visible and not self._is_truck_complete(truck)
+        ]
         self._schedule_insights = build_schedule_insights(self._trucks)
+        kit_stage_windows_by_truck = self._build_kit_stage_windows_map()
 
         self._kit_index = {}
         for truck in self._trucks:
@@ -198,60 +573,66 @@ class MainWindow(QMainWindow):
                 if kit.id is not None:
                     self._kit_index[kit.id] = (truck, kit)
 
+        # Positional call keeps compatibility if board_widget.py is briefly out of sync
+        # (e.g., during hot-reload) and still expects the old final parameter name.
         self._board_widget.set_data(
             self._trucks,
-            truck_planned_start_week_by_id=self._schedule_insights.truck_planned_start_week_by_id,
-            kit_release_hold_weeks_by_id=self._schedule_insights.kit_release_hold_weeks_by_id,
+            self._schedule_insights.truck_planned_start_week_by_id,
+            self._schedule_insights.kit_release_hold_weeks_by_id,
+            self._schedule_insights.current_week,
+            kit_stage_windows_by_truck,
         )
 
         metrics = compute_dashboard_metrics(self._trucks, schedule_insights=self._schedule_insights)
         self._update_health_strip(metrics)
-        self._update_schedule_panel()
         self._update_attention_panel(metrics)
 
         hold_count = len(self._schedule_insights.release_hold_items)
         self._status_label.setText(
-            f"Week: {_fmt_week(self._schedule_insights.current_week)} | Trucks: {len(self._trucks)} "
+            f"Week of {_current_week_of_label()} | Trucks: {len(self._trucks)} "
             f"| Active Kits: {len(self._kit_index)} | Engineering Holds: {hold_count}"
         )
 
+    def _build_kit_stage_windows_map(self) -> dict[tuple[int, str, str], tuple[float, float]]:
+        if not self._schedule_insights:
+            return {}
+        mapping: dict[tuple[int, str, str], tuple[float, float]] = {}
+        planned_start_by_truck_id = self._schedule_insights.truck_planned_start_week_by_id
+        for window in self._schedule_insights.kit_operation_windows:
+            kit_name = str(window.kit_name or "").strip().lower()
+            for truck in self._trucks:
+                if truck.id is None:
+                    continue
+                truck_start_week = planned_start_by_truck_id.get(int(truck.id))
+                if truck_start_week is None:
+                    continue
+                key = (int(truck.id), kit_name, window.stage)
+                mapping[key] = (
+                    round(truck_start_week + window.start_week, 2),
+                    round(truck_start_week + window.end_week, 2),
+                )
+        return mapping
+
     def _on_add_truck(self) -> None:
-        truck_number, accepted = QInputDialog.getText(
-            self,
-            "Add Truck",
-            "Truck number:",
-        )
-        if not accepted:
+        dialog = AddTruckDialog(parent=self)
+        if dialog.exec() != QDialog.Accepted:
             return
 
-        clean_truck_number = truck_number.strip()
+        clean_truck_number, clean_client, clean_planned_start = dialog.get_values()
         if not clean_truck_number:
-            QMessageBox.warning(self, "Invalid Input", "Truck number is required.")
+            QMessageBox.warning(self, "Invalid Input", "Truck F number is required.")
             return
 
-        day_zero_text, day_zero_accepted = QInputDialog.getText(
-            self,
-            "Add Truck",
-            "Calendar Day Zero (YYYY-MM-DD):",
-        )
-        if not day_zero_accepted:
-            return
-
-        clean_day_zero = day_zero_text.strip()
-        if not clean_day_zero:
-            QMessageBox.warning(self, "Invalid Input", "Calendar Day Zero is required.")
+        if not clean_planned_start:
+            QMessageBox.warning(self, "Invalid Input", "Day Zero is required.")
             return
 
         try:
-            parsed_day_zero = date.fromisoformat(clean_day_zero)
-        except ValueError:
-            QMessageBox.warning(self, "Invalid Input", "Calendar Day Zero must be YYYY-MM-DD.")
-            return
-
-        notes = f"Calendar Day Zero: {parsed_day_zero.isoformat()}"
-
-        try:
-            self.database.create_truck(clean_truck_number, notes=notes)
+            self.database.create_truck(
+                truck_number=clean_truck_number,
+                client=clean_client,
+                planned_start_date=clean_planned_start,
+            )
         except sqlite3.IntegrityError:
             QMessageBox.warning(
                 self,
@@ -264,6 +645,49 @@ class MainWindow(QMainWindow):
             return
 
         self.refresh_view()
+
+    def _on_manage_truck_plan(self) -> None:
+        all_trucks = sort_trucks_natural(self.database.load_trucks_with_kits(active_only=True))
+        planned_trucks = [truck for truck in all_trucks if not self._is_truck_complete(truck)]
+        if not planned_trucks:
+            QMessageBox.information(self, "No Trucks", "There are no trucks available to plan.")
+            return
+
+        dialog = TruckPlanDialog(trucks=planned_trucks, parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        updates = dialog.get_updates()
+        if not updates:
+            return
+
+        self.database.update_truck_plans(updates)
+        self.refresh_view()
+        self.statusBar().showMessage("Truck plan updated.", 3000)
+
+    def _on_wipe_db_clicked(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Wipe Database (Dev)",
+            "This will delete all local data and recreate the local database. Continue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        try:
+            self.database.wipe_database()
+        except OSError as exc:
+            QMessageBox.critical(self, "Wipe Failed", f"Could not wipe database: {exc}")
+            return
+        except sqlite3.Error as exc:
+            QMessageBox.critical(self, "Wipe Failed", f"Database error: {exc}")
+            return
+
+        self.refresh_view()
+        self.statusBar().showMessage("Local database wiped.", 5000)
+
     def _on_kit_selected(self, kit_id: int) -> None:
         result = self._kit_index.get(kit_id)
         if not result:
@@ -275,14 +699,18 @@ class MainWindow(QMainWindow):
             return
 
         values = dialog.get_values()
-        self.database.update_truck_kit(
-            kit_id=kit_id,
-            release_state=str(values["release_state"]),
-            current_stage=str(values["current_stage"]),
-            magnitude=str(values["magnitude"]),
-            blocker=str(values["blocker"]),
-            is_active=bool(values["is_active"]),
-        )
+        try:
+            self.database.update_truck_kit(
+                kit_id=kit_id,
+                release_state=str(values["release_state"]),
+                current_stage=str(values["current_stage"]),
+                blocker=str(values["blocker"]),
+                pdf_links=str(values["pdf_links"]),
+                is_active=bool(values["is_active"]),
+            )
+        except sqlite3.Error as exc:
+            QMessageBox.critical(self, "Update Failed", f"Could not save kit changes: {exc}")
+            return
         self.refresh_view()
 
     def _on_kit_stage_drop_requested(self, kit_id: int, target_stage: str) -> None:
@@ -295,27 +723,25 @@ class MainWindow(QMainWindow):
         truck, kit = result
         current_idx = STAGE_ORDER.index(kit.current_stage)
         target_idx = STAGE_ORDER.index(target_stage)
-        if target_idx <= current_idx:
-            if target_idx < current_idx:
-                self.statusBar().showMessage(
-                    "Drag-and-drop only moves kits forward. Use kit edit to move backward.",
-                    4000,
-                )
+        if target_idx == current_idx:
             return
 
         release_state = kit.release_state
         if release_state == "not_released" and target_stage != "release":
-            # Moving into fabrication implies engineering has at least partially released.
-            release_state = "partial"
+            # Moving into fabrication implies engineering released the kit.
+            release_state = "released"
 
-        self.database.update_truck_kit(
-            kit_id=kit_id,
-            release_state=release_state,
-            current_stage=target_stage,
-            magnitude=kit.magnitude,
-            blocker=kit.blocker,
-            is_active=kit.is_active,
-        )
+        try:
+            self.database.update_truck_kit(
+                kit_id=kit_id,
+                release_state=release_state,
+                current_stage=target_stage,
+                blocker=kit.blocker,
+                is_active=kit.is_active,
+            )
+        except sqlite3.Error as exc:
+            QMessageBox.critical(self, "Move Failed", f"Could not move kit to {target_stage.upper()}: {exc}")
+            return
         self.refresh_view()
         self.statusBar().showMessage(
             f"Moved {truck.truck_number} {kit.kit_name} to {target_stage.upper()}",
@@ -327,7 +753,7 @@ class MainWindow(QMainWindow):
         active_kits = [kit for kit in truck.kits if kit.is_active]
         if not active_kits:
             return False
-        return all(str(kit.current_stage).strip().lower() == "welded" for kit in active_kits)
+        return all(str(kit.current_stage).strip().lower() == "complete" for kit in active_kits)
 
     def _build_health_strip(self) -> QWidget:
         strip = QWidget()
@@ -494,11 +920,74 @@ class MainWindow(QMainWindow):
             self._hold_summary_label.setText("Engineering release hold: none currently past planned start.")
             self._hold_summary_label.setStyleSheet("font-size: 12px; font-weight: 700; color: #2E7D32;")
 
-        lines = ["Standard Lag / Duration (from truck planned start):"]
+        lines = ["Kit Lag / Duration (from truck planned start):"]
         for standard in self._schedule_insights.standards:
             lines.append(
                 f"{standard.kit_name}: +{standard.lag_weeks:.1f}w lag, {standard.duration_weeks:.1f}w duration"
             )
+
+        lines.append("")
+        lines.append("Operation Standards (weeks from Day Zero):")
+        for operation in self._schedule_insights.operation_standards:
+            lines.append(
+                f"{operation.stage.upper()}: +{operation.start_offset_weeks:.1f}w start, "
+                f"{operation.duration_weeks:.1f}w duration, "
+                f"{operation.work_days:.1f}d work, "
+                f"{operation.spare_days:+.1f}d spare"
+            )
+
+        lines.append("")
+        cycle_plan = self._schedule_insights.cycle_plan
+        lines.append(
+            f"Cycle Plan: repeat every {cycle_plan.repeat_weeks:.1f}w on a {cycle_plan.cycle_weeks:.1f}w cycle "
+            f"with {cycle_plan.odd_jobs_weeks:.1f}w odd-jobs reserve"
+        )
+        cycle_state = "odd-jobs window" if cycle_plan.in_odd_jobs_window else "production window"
+        lines.append(
+            f"Current cycle position: {_fmt_week(cycle_plan.cycle_position_week)} / "
+            f"{cycle_plan.cycle_weeks:.1f}w ({cycle_state})"
+        )
+
+        lines.append("")
+        kit_windows = self._schedule_insights.kit_operation_windows
+        if kit_windows:
+            lines.append("Kit Operation Windows (weeks from Day Zero):")
+            grouped: dict[str, list[str]] = {}
+            for window in kit_windows:
+                stage_text = (
+                    f"{window.stage.upper()} {_fmt_week(window.start_week)}-{_fmt_week(window.end_week)}"
+                )
+                grouped.setdefault(window.kit_name, []).append(stage_text)
+            for kit_name, stages in grouped.items():
+                lines.append(f"{kit_name}: " + "; ".join(stages))
+        else:
+            lines.append("Kit Operation Windows: none")
+
+        lines.append("")
+        overlaps = self._schedule_insights.operation_overlaps
+        if overlaps:
+            lines.append("Planned Overlap Windows:")
+            for overlap in overlaps:
+                lines.append(
+                    f"{overlap.upstream_stage.upper()} -> {overlap.downstream_stage.upper()}: "
+                    f"{overlap.overlap_weeks:.1f}w overlap"
+                )
+        else:
+            lines.append("Planned Overlap Windows: none")
+
+        lines.append("")
+        concurrency_items = self._schedule_insights.concurrency_items
+        if concurrency_items:
+            lines.append("Live Concurrency (weld started with upstream still active):")
+            for item in concurrency_items[:5]:
+                lines.append(
+                    f"{item.truck_number}: {item.upstream_open_count} upstream kit(s) still in release/laser/bend"
+                )
+            if len(concurrency_items) > 5:
+                lines.append(f"+{len(concurrency_items) - 5} more truck(s)")
+        else:
+            lines.append("Live Concurrency: none")
+
         self._standards_label.setText("\n".join(lines))
 
     def _update_health_strip(self, metrics: DashboardMetrics) -> None:
@@ -526,7 +1015,7 @@ class MainWindow(QMainWindow):
         self._set_tile(
             "weld_feed",
             value=f"{metrics.weld_feed.score:.1f} ({metrics.weld_feed.level.upper()})",
-            detail="Magnitude-weighted bend/weld workload",
+            detail="Active kits in bend/weld",
             tone=metrics.weld_feed.level,
         )
 
@@ -574,4 +1063,6 @@ class MainWindow(QMainWindow):
             else:
                 color = "#1F2937"
             self._attention_list.add_wrapped_item(text=text, color=color)
+
+
 

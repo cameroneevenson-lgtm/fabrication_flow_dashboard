@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from models import Truck, TruckKit
 from schedule import ScheduleInsights, build_schedule_insights
 
-MAGNITUDE_WEIGHT = {"small": 0.3, "medium": 0.7, "large": 1.2}
-
 
 @dataclass
 class NextMainKitRisk:
@@ -53,11 +51,17 @@ class DashboardMetrics:
 def sort_trucks_natural(trucks: list[Truck]) -> list[Truck]:
     number_pattern = re.compile(r"(\d+)")
 
-    def key_fn(truck: Truck) -> tuple[int, int | str]:
+    def key_fn(truck: Truck) -> tuple[int, int, int, int | str]:
+        build_order = int(truck.build_order or 0)
         match = number_pattern.search(truck.truck_number)
-        if match:
-            return (0, int(match.group(1)))
-        return (1, truck.truck_number.lower())
+        numeric_part = int(match.group(1)) if match else 0
+        text_fallback: int | str = truck.truck_number.lower() if not match else numeric_part
+        return (
+            0 if build_order > 0 else 1,
+            build_order if build_order > 0 else 0,
+            0 if match else 1,
+            text_fallback,
+        )
 
     return sorted(trucks, key=key_fn)
 
@@ -149,11 +153,11 @@ def _compute_weld_feed(trucks: list[Truck]) -> WeldFeedStatus:
             if not kit.is_active:
                 continue
             if kit.current_stage in {"bend", "weld"}:
-                score += MAGNITUDE_WEIGHT.get(kit.magnitude, MAGNITUDE_WEIGHT["medium"])
+                score += 1.0
 
     if score < 2.0:
         level = "low"
-    elif score < 3.5:
+    elif score < 4.0:
         level = "watch"
     else:
         level = "healthy"
@@ -215,6 +219,28 @@ def _build_attention_items(
             )
         )
 
+    cycle_plan = schedule_insights.cycle_plan
+    if schedule_insights.release_hold_items and cycle_plan.odd_jobs_weeks > 0.0:
+        if cycle_plan.in_odd_jobs_window:
+            priority = 92
+            detail = (
+                f"Release holds are consuming the odd-jobs week "
+                f"(cycle {cycle_plan.cycle_position_week:.1f}/{cycle_plan.cycle_weeks:.1f})."
+            )
+        else:
+            priority = 78
+            detail = (
+                f"Late releases reduce odd-jobs reserve "
+                f"({cycle_plan.odd_jobs_weeks:.1f}w each {cycle_plan.cycle_weeks:.1f}w cycle)."
+            )
+        items.append(
+            AttentionItem(
+                priority=priority,
+                title="Odd-jobs buffer at risk",
+                detail=detail,
+            )
+        )
+
     if next_main_kit_risk.is_warning:
         items.append(
             AttentionItem(
@@ -256,6 +282,48 @@ def _build_attention_items(
                 priority=70,
                 title="Release gap warning",
                 detail=release_gap.message,
+            )
+        )
+
+    operation_standards = schedule_insights.operation_standards
+    overloaded_stages = [op.stage.upper() for op in operation_standards if op.spare_days < 0.0]
+    low_spare_stages = [op.stage.upper() for op in operation_standards if 0.0 <= op.spare_days < 1.0]
+
+    if overloaded_stages:
+        items.append(
+            AttentionItem(
+                priority=88,
+                title="Operation standard is overbooked",
+                detail=(
+                    "Planned work exceeds available duration in: "
+                    + ", ".join(overloaded_stages)
+                    + "."
+                ),
+            )
+        )
+    elif low_spare_stages:
+        items.append(
+            AttentionItem(
+                priority=72,
+                title="Spare capacity is tight",
+                detail=(
+                    "Less than 1 spare day in: "
+                    + ", ".join(low_spare_stages)
+                    + "."
+                ),
+            )
+        )
+
+    if schedule_insights.concurrency_items:
+        top = schedule_insights.concurrency_items[0]
+        items.append(
+            AttentionItem(
+                priority=74,
+                title="Concurrent flow active",
+                detail=(
+                    f"{len(schedule_insights.concurrency_items)} truck(s) have weld started while upstream is still open; "
+                    f"example: {top.truck_number} with {top.upstream_open_count} upstream kit(s)."
+                ),
             )
         )
 
