@@ -50,5 +50,21 @@ A PySide6 application for tracking fabrication flow and schedule signals.
 - `stages.py` - canonical `Stage` enum and metadata
 - `schedule.py` - schedule insights and release/concurrency calculations
 - `metrics.py` - dashboard metrics and attention signals
+- `teams_card.py` - Boss Lens to Microsoft Teams Adaptive Card payload builder
+- `export_boss_lens_teams_card.py` - export/post Teams webhook JSON payload
 - `truck_registry.csv` - truck registry input
 - `fabrication_flow.db` - local operational state
+
+## Teams Adaptive Card payload (Boss Lens)
+
+Generate the webhook JSON payload:
+
+```powershell
+.\.venv\Scripts\python.exe export_boss_lens_teams_card.py --output _runtime\boss_lens_teams_card.json
+```
+
+Generate and post directly to a webhook:
+
+```powershell
+.\.venv\Scripts\python.exe export_boss_lens_teams_card.py --webhook-url "<YOUR_WEBHOOK_URL>"
+```
