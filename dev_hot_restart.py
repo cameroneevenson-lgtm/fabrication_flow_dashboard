@@ -158,22 +158,6 @@ def _read_reload_response(resp_path: str) -> Dict[str, str]:
         return {}
 
 
-def _warn_and_ask_restart(exit_code: int) -> bool:
-    try:
-        title = "Fabrication Flow Dashboard - Hot Reload"
-        msg = (
-            f"The app process exited with code {exit_code}.\n\n"
-            "Press Retry to restart, or Cancel to exit."
-        )
-        MB_RETRYCANCEL = 0x00000005
-        MB_ICONWARNING = 0x00000030
-        IDRETRY = 4
-        result = ctypes.windll.user32.MessageBoxW(0, msg, title, MB_RETRYCANCEL | MB_ICONWARNING)
-        return int(result) == IDRETRY
-    except Exception:
-        return False
-
-
 def _acquire_single_instance_lock(root: str):
     try:
         key = hashlib.sha1(os.path.normpath(root).lower().encode("utf-8")).hexdigest()
@@ -265,16 +249,6 @@ def main() -> int:
                 if rc == 0:
                     return 0
                 print(f"App exited with code {rc}.")
-                if _warn_and_ask_restart(rc):
-                    proc = _spawn_app(py_exe, app_py, app_args, cwd=root)
-                    last_spawn_at = time.time()
-                    pending_restart = False
-                    awaiting_user_decision = False
-                    current_request_id = ""
-                    request_posted_at = 0.0
-                    last_change_at = 0.0
-                    pending_changes = []
-                    continue
                 return rc
 
             time.sleep(max(0.2, float(ns.interval)))

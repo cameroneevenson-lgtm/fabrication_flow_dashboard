@@ -542,14 +542,19 @@ class MainWindow(QMainWindow):
             hot_reload_label = QLabel("Hot reload requested.")
             hot_reload_label.setStyleSheet("font-size: 13px; font-weight: 700;")
             hot_reload_label.setObjectName("hot_reload_label")
+            hot_reload_accept_button = QPushButton("Accept Reload")
+            hot_reload_accept_button.setMinimumHeight(24)
+            hot_reload_accept_button.clicked.connect(self._accept_hot_reload_from_banner)
             hot_reload_cancel_button = QPushButton("Cancel Reload")
             hot_reload_cancel_button.setMinimumHeight(24)
             hot_reload_cancel_button.clicked.connect(self._cancel_hot_reload_from_banner)
             hot_reload_layout.addWidget(hot_reload_label)
+            hot_reload_layout.addWidget(hot_reload_accept_button)
             hot_reload_layout.addWidget(hot_reload_cancel_button)
             root_layout.addWidget(hot_reload_bar)
             self._hot_reload_bar = hot_reload_bar
             self._hot_reload_label = hot_reload_label
+            self._hot_reload_accept_button = hot_reload_accept_button
             self._hot_reload_cancel_button = hot_reload_cancel_button
 
             self._hot_reload_timer = self.startTimer(800)
@@ -617,11 +622,13 @@ class MainWindow(QMainWindow):
                 sample += ", ..."
             self._hot_reload_label.setText(
                 f"Hot reload requested ({file_text}). Auto-reload in {seconds_remaining}s unless canceled. "
+                f"Click Accept Reload to apply now. "
                 f"Sample: {sample}"
             )
         else:
             self._hot_reload_label.setText(
-                f"Hot reload requested ({file_text}). Auto-reload in {seconds_remaining}s unless canceled."
+                f"Hot reload requested ({file_text}). Auto-reload in {seconds_remaining}s unless canceled. "
+                f"Click Accept Reload to apply now."
             )
         if self._hot_reload_bar is not None:
             self._hot_reload_bar.setVisible(True)
@@ -646,6 +653,13 @@ class MainWindow(QMainWindow):
     def _clear_hot_reload_banner(self) -> None:
         if self._hot_reload_bar is not None:
             self._hot_reload_bar.setVisible(False)
+
+    def _accept_hot_reload_from_banner(self) -> None:
+        if not self._hot_reload_request_id:
+            return
+        self._write_hot_reload_response("accept")
+        self._clear_hot_reload_banner()
+        self.statusBar().showMessage("Hot reload accepted; restarting app.", 3000)
 
     def _cancel_hot_reload_from_banner(self) -> None:
         if not self._hot_reload_request_id:
