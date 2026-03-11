@@ -912,14 +912,8 @@ class MainWindow(QMainWindow):
         )
 
         metrics = compute_dashboard_metrics(self._trucks, schedule_insights=self._schedule_insights)
-        boss_metrics = compute_boss_lens_metrics(
-            self._trucks,
-            schedule_insights=self._schedule_insights,
-            dashboard_metrics=metrics,
-        )
         self._update_health_strip(metrics)
         self._update_attention_panel(metrics)
-        self._update_boss_lens_view(boss_metrics)
 
         hold_count = len(self._schedule_insights.release_hold_items)
         self._status_label.setText(
