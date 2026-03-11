@@ -16,6 +16,7 @@ A PySide6 application for tracking fabrication flow and schedule signals.
    ```powershell
    .\dev_run.bat
    ```
+   During hot reload, a top banner appears. Click `Cancel Reload` on the banner within 10 seconds to keep the current session; otherwise the app auto-reloads.
 4. Compatibility command (same launcher behavior):
    ```powershell
    .\.venv\Scripts\python.exe watch_and_run.py

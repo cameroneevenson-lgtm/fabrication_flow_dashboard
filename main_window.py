@@ -508,7 +508,9 @@ class MainWindow(QMainWindow):
         self._week_lens_enabled = True
         self._hot_reload_enabled = hot_reload_active
         self._hot_reload_request_id: str = ""
+        self._hot_reload_canceled_request_id: str = ""
         self._hot_reload_request_path: Path | None = None
+        self._hot_reload_response_path: Path | None = None
         self._hot_reload_bar: QFrame | None = None
         self._hot_reload_timer = None
         self._hot_reload_last_check = 0.0
@@ -525,6 +527,7 @@ class MainWindow(QMainWindow):
 
         if self._hot_reload_enabled:
             self._hot_reload_request_path = runtime_dir / "_runtime" / "hot_reload_request.json" if runtime_dir else None
+            self._hot_reload_response_path = runtime_dir / "_runtime" / "hot_reload_response.json" if runtime_dir else None
 
             hot_reload_bar = QFrame()
             hot_reload_bar.setVisible(False)
@@ -539,10 +542,15 @@ class MainWindow(QMainWindow):
             hot_reload_label = QLabel("Hot reload requested.")
             hot_reload_label.setStyleSheet("font-size: 13px; font-weight: 700;")
             hot_reload_label.setObjectName("hot_reload_label")
+            hot_reload_cancel_button = QPushButton("Cancel Reload")
+            hot_reload_cancel_button.setMinimumHeight(24)
+            hot_reload_cancel_button.clicked.connect(self._cancel_hot_reload_from_banner)
             hot_reload_layout.addWidget(hot_reload_label)
+            hot_reload_layout.addWidget(hot_reload_cancel_button)
             root_layout.addWidget(hot_reload_bar)
             self._hot_reload_bar = hot_reload_bar
             self._hot_reload_label = hot_reload_label
+            self._hot_reload_cancel_button = hot_reload_cancel_button
 
             self._hot_reload_timer = self.startTimer(800)
             self._poll_hot_reload_request()
@@ -569,6 +577,7 @@ class MainWindow(QMainWindow):
         if not self._hot_reload_request_path.exists():
             if self._hot_reload_request_id:
                 self._hot_reload_request_id = ""
+                self._hot_reload_canceled_request_id = ""
                 self._clear_hot_reload_banner()
             return
 
@@ -576,8 +585,11 @@ class MainWindow(QMainWindow):
         request_id = request.get("request_id", "").strip()
         if not request_id:
             return
+        if request_id == self._hot_reload_canceled_request_id:
+            return
         if request_id != self._hot_reload_request_id:
             self._hot_reload_request_id = request_id
+            self._hot_reload_canceled_request_id = ""
             ts_epoch = request.get("ts_epoch", 0)
             timeout_sec = request.get("decision_timeout_sec", 10.0)
             try:
@@ -605,11 +617,12 @@ class MainWindow(QMainWindow):
             if len(files) > 3:
                 sample += ", ..."
             self._hot_reload_label.setText(
-                f"Hot reload requested ({file_text}). Auto-reload in {seconds_remaining}s. Sample: {sample}"
+                f"Hot reload requested ({file_text}). Auto-reload in {seconds_remaining}s unless canceled. "
+                f"Sample: {sample}"
             )
         else:
             self._hot_reload_label.setText(
-                f"Hot reload requested ({file_text}). Auto-reload in {seconds_remaining}s."
+                f"Hot reload requested ({file_text}). Auto-reload in {seconds_remaining}s unless canceled."
             )
         if self._hot_reload_bar is not None:
             self._hot_reload_bar.setVisible(True)
@@ -634,6 +647,27 @@ class MainWindow(QMainWindow):
     def _clear_hot_reload_banner(self) -> None:
         if self._hot_reload_bar is not None:
             self._hot_reload_bar.setVisible(False)
+
+    def _cancel_hot_reload_from_banner(self) -> None:
+        if not self._hot_reload_request_id:
+            return
+        self._write_hot_reload_response("reject")
+        self._hot_reload_canceled_request_id = self._hot_reload_request_id
+        self._clear_hot_reload_banner()
+        self.statusBar().showMessage("Hot reload canceled for current change batch.", 3000)
+
+    def _write_hot_reload_response(self, action: str) -> None:
+        if not self._hot_reload_response_path or not self._hot_reload_request_id:
+            return
+        payload = {
+            "request_id": self._hot_reload_request_id,
+            "action": str(action or "").strip().lower(),
+        }
+        try:
+            self._hot_reload_response_path.parent.mkdir(parents=True, exist_ok=True)
+            self._hot_reload_response_path.write_text(json.dumps(payload), encoding="utf-8")
+        except OSError:
+            return
 
     def _build_operations_tab(self) -> QWidget:
         tab = QWidget()

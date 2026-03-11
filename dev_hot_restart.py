@@ -249,7 +249,7 @@ def main() -> int:
         "--decision-timeout",
         type=float,
         default=10.0,
-        help="Seconds to wait for in-app Accept/Reject before forcing reload.",
+        help="Seconds before auto-reload unless canceled from the in-app banner.",
     )
     ns = parser.parse_args()
 
@@ -354,17 +354,14 @@ def main() -> int:
                     batch_count = len(pending_changes)
                     print(
                         f"Hot-reload request posted after {quiet_for:.1f}s quiet "
-                        f"({batch_count} file(s) batched). Waiting for in-app accept/reject "
+                        f"({batch_count} file(s) batched). Waiting for in-app cancel "
                         f"(auto-reload in {decision_timeout:.0f}s)..."
                     )
 
                 waited_for = max(0.0, now - request_posted_at)
                 if awaiting_user_decision and request_posted_at > 0.0 and waited_for >= decision_timeout:
                     batch_count = len(pending_changes)
-                    print(
-                        f"No in-app decision after {decision_timeout:.0f}s "
-                        f"({batch_count} file(s)); forcing reload."
-                    )
+                    print(f"No in-app cancel after {decision_timeout:.0f}s ({batch_count} file(s)); forcing reload.")
                     _terminate_process(proc)
                     proc = _spawn_app(py_exe, app_py, app_args, cwd=root)
                     last_spawn_at = time.time()
@@ -396,7 +393,7 @@ def main() -> int:
                     pending_changes = []
                     _clear_reload_handshake(req_path, resp_path)
                 elif action == "reject":
-                    print("Reload rejected in app; keeping current session.")
+                    print("Reload canceled in app; keeping current session.")
                     pending_restart = False
                     awaiting_user_decision = False
                     current_request_id = ""
