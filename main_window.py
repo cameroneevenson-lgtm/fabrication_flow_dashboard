@@ -696,6 +696,19 @@ class MainWindow(QMainWindow):
         if next_back_stage == back_stage:
             return
 
+        reply = QMessageBox.question(
+            self,
+            "Confirm Tail Collapse",
+            (
+                f"Collapse the tail for {truck.truck_number} {kit.kit_name} "
+                f"from {stage_label(back_stage)} to {stage_label(next_back_stage)}?"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
         try:
             self.database.update_truck_kit(
                 kit_id=kit_id,
