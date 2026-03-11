@@ -60,16 +60,10 @@ A PySide6 application for tracking fabrication flow and schedule signals.
 Boss Lens now includes a `Publish to Teams` button.
 
 - Open the `Boss Lens` tab.
-- Paste your webhook URL in `Teams Webhook URL`.
+- The webhook URL is pre-filled with the project default.
 - Click `Test Auth` to send a minimal card and validate authorization first.
 - Click `Publish to Teams`.
 - Payload is also written to `_runtime\boss_lens_teams_card.json`.
-
-Optional default webhook URL for the UI field:
-
-```powershell
-$env:FAB_FLOW_TEAMS_WEBHOOK_URL="<YOUR_WEBHOOK_URL>"
-```
 
 Generate the webhook JSON payload:
 

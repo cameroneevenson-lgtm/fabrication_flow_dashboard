@@ -54,6 +54,12 @@ from schedule import ScheduleInsights, build_schedule_insights
 from stages import STAGE_SEQUENCE, Stage, normalize_stage_span, stage_from_id, stage_label, stage_options
 from teams_card import build_teams_webhook_payload
 
+DEFAULT_TEAMS_WEBHOOK_URL = (
+    "https://default97009fec357647f39ce0fc3d1496b7.b8.environment.api.powerplatform.com:443/"
+    "powerautomate/automations/direct/workflows/98b3a4e7ea8c439090e2d40232163817/triggers/manual/"
+    "paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=ggEqWDyQT6T3GEouJCsp0jiZPF8mgQI5j5bl4T8T4CQ"
+)
+
 
 def _fmt_week(value: float) -> str:
     return f"W{value:.1f}"
@@ -698,7 +704,7 @@ class MainWindow(QMainWindow):
         publish_label.setStyleSheet("font-size: 12px; color: #334155;")
         publish_layout.addWidget(publish_label)
 
-        default_webhook = os.environ.get("FAB_FLOW_TEAMS_WEBHOOK_URL", "").strip()
+        default_webhook = DEFAULT_TEAMS_WEBHOOK_URL
         self._teams_webhook_input = QLineEdit(default_webhook)
         self._teams_webhook_input.setPlaceholderText(
             "Paste Power Automate / Teams webhook URL"

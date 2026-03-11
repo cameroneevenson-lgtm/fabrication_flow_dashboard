@@ -13,6 +13,12 @@ from schedule import build_schedule_insights
 from stages import Stage, stage_from_id
 from teams_card import build_teams_webhook_payload
 
+DEFAULT_TEAMS_WEBHOOK_URL = (
+    "https://default97009fec357647f39ce0fc3d1496b7.b8.environment.api.powerplatform.com:443/"
+    "powerautomate/automations/direct/workflows/98b3a4e7ea8c439090e2d40232163817/triggers/manual/"
+    "paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=ggEqWDyQT6T3GEouJCsp0jiZPF8mgQI5j5bl4T8T4CQ"
+)
+
 
 def _is_truck_complete(truck) -> bool:
     active_kits = [kit for kit in truck.kits if kit.is_active]
@@ -52,8 +58,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--webhook-url",
-        default="",
-        help="Optional Teams/Power Automate webhook URL. If set, the payload is posted after writing.",
+        default=DEFAULT_TEAMS_WEBHOOK_URL,
+        help="Teams/Power Automate webhook URL. Defaults to the project hardcoded endpoint.",
     )
     args = parser.parse_args()
 
@@ -112,4 +118,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
