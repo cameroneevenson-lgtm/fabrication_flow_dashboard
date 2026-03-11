@@ -61,6 +61,7 @@ Boss Lens now includes a `Publish to Teams` button.
 
 - Open the `Boss Lens` tab.
 - Paste your webhook URL in `Teams Webhook URL`.
+- Click `Test Auth` to send a minimal card and validate authorization first.
 - Click `Publish to Teams`.
 - Payload is also written to `_runtime\boss_lens_teams_card.json`.
 

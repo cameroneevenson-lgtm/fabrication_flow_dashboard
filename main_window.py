@@ -707,6 +707,9 @@ class MainWindow(QMainWindow):
 
         publish_button = QPushButton("Publish to Teams")
         publish_button.clicked.connect(self._publish_boss_lens_to_teams)
+        test_auth_button = QPushButton("Test Auth")
+        test_auth_button.clicked.connect(self._test_teams_webhook_auth)
+        publish_layout.addWidget(test_auth_button)
         publish_layout.addWidget(publish_button)
         layout.addWidget(publish_panel)
 
@@ -1392,7 +1395,7 @@ class MainWindow(QMainWindow):
                 issue_item.setForeground(QColor(tone_color))
 
     def _publish_boss_lens_to_teams(self) -> None:
-        webhook_url = str(self._teams_webhook_input.text() if hasattr(self, "_teams_webhook_input") else "").strip()
+        webhook_url = self._current_teams_webhook_url()
         if not webhook_url:
             QMessageBox.warning(
                 self,
@@ -1422,17 +1425,8 @@ class MainWindow(QMainWindow):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-        raw = json.dumps(payload).encode("utf-8")
-        request = urllib.request.Request(
-            webhook_url,
-            data=raw,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-
         try:
-            with urllib.request.urlopen(request, timeout=20) as response:
-                status = int(getattr(response, "status", response.getcode()))
+            status = self._post_json_webhook(webhook_url, payload)
             self.statusBar().showMessage(f"Published Boss Lens to Teams ({status}).", 4000)
             QMessageBox.information(
                 self,
@@ -1459,6 +1453,93 @@ class MainWindow(QMainWindow):
                 "Publish Failed",
                 f"Unexpected error while publishing: {exc}",
             )
+
+    def _test_teams_webhook_auth(self) -> None:
+        webhook_url = self._current_teams_webhook_url()
+        if not webhook_url:
+            QMessageBox.warning(
+                self,
+                "Webhook URL Required",
+                "Enter a Teams/Power Automate webhook URL first.",
+            )
+            return
+
+        payload = {
+            "type": "message",
+            "attachments": [
+                {
+                    "contentType": "application/vnd.microsoft.card.adaptive",
+                    "contentUrl": None,
+                    "content": {
+                        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                        "type": "AdaptiveCard",
+                        "version": "1.4",
+                        "body": [
+                            {
+                                "type": "TextBlock",
+                                "text": "Boss Lens Teams Auth Test",
+                                "weight": "Bolder",
+                                "wrap": True,
+                            },
+                            {
+                                "type": "TextBlock",
+                                "text": f"Auth test timestamp: {int(time.time())}",
+                                "isSubtle": True,
+                                "wrap": True,
+                            },
+                        ],
+                    },
+                }
+            ],
+        }
+
+        output_path = Path(__file__).resolve().parent / "_runtime" / "teams_auth_test_payload.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+        try:
+            status = self._post_json_webhook(webhook_url, payload)
+            self.statusBar().showMessage(f"Teams auth test sent ({status}).", 4000)
+            QMessageBox.information(
+                self,
+                "Auth Test Sent",
+                f"Webhook accepted auth test.\nHTTP status: {status}\nPayload: {output_path}",
+            )
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace").strip()
+            body = f"\n\n{detail}" if detail else ""
+            QMessageBox.critical(
+                self,
+                "Auth Test Failed",
+                f"Webhook HTTP error {exc.code}: {exc.reason}{body}",
+            )
+        except urllib.error.URLError as exc:
+            QMessageBox.critical(
+                self,
+                "Auth Test Failed",
+                f"Webhook URL error: {exc.reason}",
+            )
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "Auth Test Failed",
+                f"Unexpected error while sending auth test: {exc}",
+            )
+
+    def _current_teams_webhook_url(self) -> str:
+        return str(self._teams_webhook_input.text() if hasattr(self, "_teams_webhook_input") else "").strip()
+
+    @staticmethod
+    def _post_json_webhook(webhook_url: str, payload: dict[str, object]) -> int:
+        raw = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            webhook_url,
+            data=raw,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return int(getattr(response, "status", response.getcode()))
 
 
 
