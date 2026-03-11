@@ -715,6 +715,9 @@ class MainWindow(QMainWindow):
         publish_button.clicked.connect(self._publish_boss_lens_to_teams)
         test_auth_button = QPushButton("Test Auth")
         test_auth_button.clicked.connect(self._test_teams_webhook_auth)
+        publish_my_version_button = QPushButton("Publish My Version")
+        publish_my_version_button.clicked.connect(self._publish_my_version_to_teams)
+        publish_layout.addWidget(publish_my_version_button)
         publish_layout.addWidget(test_auth_button)
         publish_layout.addWidget(publish_button)
         layout.addWidget(publish_panel)
@@ -1530,6 +1533,94 @@ class MainWindow(QMainWindow):
                 self,
                 "Auth Test Failed",
                 f"Unexpected error while sending auth test: {exc}",
+            )
+
+    def _publish_my_version_to_teams(self) -> None:
+        webhook_url = self._current_teams_webhook_url()
+        if not webhook_url:
+            QMessageBox.warning(
+                self,
+                "Webhook URL Required",
+                "Enter a Teams/Power Automate webhook URL first.",
+            )
+            return
+
+        payload_path = Path(__file__).resolve().parent / "_runtime" / "boss_lens_teams_card.json"
+        if not payload_path.exists():
+            QMessageBox.warning(
+                self,
+                "Payload Not Found",
+                f"Could not find payload file:\n{payload_path}",
+            )
+            return
+
+        try:
+            payload_obj = json.loads(payload_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            QMessageBox.critical(
+                self,
+                "Publish Failed",
+                f"Could not read or parse payload JSON:\n{payload_path}\n\n{exc}",
+            )
+            return
+
+        if not isinstance(payload_obj, dict):
+            QMessageBox.critical(
+                self,
+                "Publish Failed",
+                "Payload file must contain a JSON object.",
+            )
+            return
+
+        payload: dict[str, object]
+        if "attachments" in payload_obj:
+            payload = payload_obj
+        elif payload_obj.get("type") == "AdaptiveCard":
+            payload = {
+                "type": "message",
+                "attachments": [
+                    {
+                        "contentType": "application/vnd.microsoft.card.adaptive",
+                        "contentUrl": None,
+                        "content": payload_obj,
+                    }
+                ],
+            }
+        else:
+            QMessageBox.critical(
+                self,
+                "Publish Failed",
+                "Payload JSON must be a Teams message payload or an AdaptiveCard object.",
+            )
+            return
+
+        try:
+            status = self._post_json_webhook(webhook_url, payload)
+            self.statusBar().showMessage(f"Published your JSON payload to Teams ({status}).", 4000)
+            QMessageBox.information(
+                self,
+                "Published",
+                f"Published your payload file to Teams.\nHTTP status: {status}\nPayload: {payload_path}",
+            )
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace").strip()
+            body = f"\n\n{detail}" if detail else ""
+            QMessageBox.critical(
+                self,
+                "Publish Failed",
+                f"Webhook HTTP error {exc.code}: {exc.reason}{body}",
+            )
+        except urllib.error.URLError as exc:
+            QMessageBox.critical(
+                self,
+                "Publish Failed",
+                f"Webhook URL error: {exc.reason}",
+            )
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "Publish Failed",
+                f"Unexpected error while publishing payload: {exc}",
             )
 
     def _current_teams_webhook_url(self) -> str:
