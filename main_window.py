@@ -1707,11 +1707,22 @@ class MainWindow(QMainWindow):
 
             marker_week: float | None = None
             marker_color = "#16A34A"
+            late_arrow_start_week: float | None = None
             if not is_released:
                 laser_bounds = windows.get(Stage.LASER)
-                laser_trailing_week = laser_bounds[1] if laser_bounds is not None else float(current_week)
+                if laser_bounds is not None:
+                    laser_start_week = float(laser_bounds[0])
+                    laser_trailing_week = float(laser_bounds[1])
+                elif windows:
+                    laser_start_week = min(float(start) for start, _end in windows.values())
+                    laser_trailing_week = max(float(end) for _start, end in windows.values())
+                else:
+                    laser_start_week = float(current_week)
+                    laser_trailing_week = float(current_week)
                 is_late_release = float(current_week) > float(laser_trailing_week)
-                marker_week = float(current_week) if is_late_release else float(laser_trailing_week)
+                marker_week = laser_start_week if is_late_release else laser_trailing_week
+                if is_late_release:
+                    late_arrow_start_week = float(current_week)
                 marker_color = "#DC2626"
             else:
                 stage_bounds = windows.get(actual_stage)
@@ -1724,11 +1735,34 @@ class MainWindow(QMainWindow):
                 marker_week = max(min_week, min(max_week, marker_week))
                 ax.scatter([marker_week], [y], s=30, c=marker_color, marker="o", zorder=6)
 
+            if late_arrow_start_week is not None and marker_week is not None:
+                arrow_start = max(min_week, min(max_week, late_arrow_start_week))
+                if arrow_start > (marker_week + 0.01):
+                    ax.annotate(
+                        "",
+                        xy=(marker_week, y),
+                        xytext=(arrow_start, y),
+                        arrowprops={
+                            "arrowstyle": "->",
+                            "color": "#DC2626",
+                            "lw": 1.2,
+                            "shrinkA": 0,
+                            "shrinkB": 0,
+                        },
+                        zorder=5.8,
+                    )
+
             if tail_stage < actual_stage and marker_week is not None:
                 tail_week: float | None = None
                 tail_bounds = windows.get(tail_stage)
                 if tail_bounds is not None:
                     tail_week = (tail_bounds[0] + tail_bounds[1]) / 2.0
+                elif tail_stage == Stage.RELEASE:
+                    laser_bounds = windows.get(Stage.LASER)
+                    if laser_bounds is not None:
+                        tail_week = float(laser_bounds[0])
+                    elif windows:
+                        tail_week = min(start for start, _end in windows.values())
 
                 if tail_week is not None:
                     tail_week = max(min_week, min(max_week, tail_week))
@@ -1746,6 +1780,20 @@ class MainWindow(QMainWindow):
                         zorder=5,
                     )
 
+        if y_positions:
+            boundary_lines = [y - (bar_height / 2.0) for y in y_positions]
+            boundary_lines.append(y_positions[-1] + (bar_height / 2.0))
+            for separator_y in boundary_lines:
+                ax.hlines(
+                    separator_y,
+                    float(min_week),
+                    float(max_week),
+                    color="#D9E2EC",
+                    linewidth=0.6,
+                    alpha=0.75,
+                    zorder=1.5,
+                )
+
         ax.axvline(float(current_week), color="#DC2626", linestyle="--", linewidth=1.2, zorder=2)
         ax.set_xlim(float(min_week), float(max_week))
         ax.set_yticks(y_positions)
@@ -1761,7 +1809,7 @@ class MainWindow(QMainWindow):
             rotation=45,
             ha="right",
         )
-        ax.grid(axis="x", color="#CBD5E1", linewidth=0.7, alpha=0.7)
+        ax.grid(axis="x", color="#94A3B8", linewidth=0.45, alpha=0.35)
         ax.margins(y=0.0)
         ax.set_xlabel("Week of (8 weeks back / 8 weeks forward)", fontsize=8)
         legend_handles = [
@@ -1941,9 +1989,17 @@ class MainWindow(QMainWindow):
             marker_week: float | None = None
             if not is_released:
                 laser_bounds = windows.get(Stage.LASER)
-                laser_trailing_week = laser_bounds[1] if laser_bounds is not None else float(insights.current_week)
+                if laser_bounds is not None:
+                    laser_start_week = float(laser_bounds[0])
+                    laser_trailing_week = float(laser_bounds[1])
+                elif windows:
+                    laser_start_week = min(float(start) for start, _end in windows.values())
+                    laser_trailing_week = max(float(end) for _start, end in windows.values())
+                else:
+                    laser_start_week = float(insights.current_week)
+                    laser_trailing_week = float(insights.current_week)
                 is_late_release = float(insights.current_week) > float(laser_trailing_week)
-                marker_week = float(insights.current_week) if is_late_release else float(laser_trailing_week)
+                marker_week = laser_start_week if is_late_release else laser_trailing_week
                 marker = "!"
             else:
                 stage_bounds = windows.get(actual_stage)
