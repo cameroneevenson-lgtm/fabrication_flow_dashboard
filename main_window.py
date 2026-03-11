@@ -487,10 +487,7 @@ class MainWindow(QMainWindow):
         self._hot_reload_enabled = hot_reload_active
         self._hot_reload_request_id: str = ""
         self._hot_reload_request_path: Path | None = None
-        self._hot_reload_response_path: Path | None = None
         self._hot_reload_bar: QFrame | None = None
-        self._hot_reload_accept_btn: QPushButton | None = None
-        self._hot_reload_reject_btn: QPushButton | None = None
         self._hot_reload_timer = None
         self._hot_reload_last_check = 0.0
         self._hot_reload_end_time: float | None = None
@@ -506,7 +503,6 @@ class MainWindow(QMainWindow):
 
         if self._hot_reload_enabled:
             self._hot_reload_request_path = runtime_dir / "_runtime" / "hot_reload_request.json" if runtime_dir else None
-            self._hot_reload_response_path = runtime_dir / "_runtime" / "hot_reload_response.json" if runtime_dir else None
 
             hot_reload_bar = QFrame()
             hot_reload_bar.setVisible(False)
@@ -521,19 +517,9 @@ class MainWindow(QMainWindow):
             hot_reload_label = QLabel("Hot reload requested.")
             hot_reload_label.setStyleSheet("font-size: 13px; font-weight: 700;")
             hot_reload_label.setObjectName("hot_reload_label")
-            hot_reload_accept = QPushButton("Accept Reload")
-            hot_reload_reject = QPushButton("Reject Reload")
-            hot_reload_accept.setMinimumHeight(26)
-            hot_reload_reject.setMinimumHeight(26)
-            hot_reload_accept.clicked.connect(self._on_hot_reload_accept)
-            hot_reload_reject.clicked.connect(self._on_hot_reload_reject)
             hot_reload_layout.addWidget(hot_reload_label)
-            hot_reload_layout.addWidget(hot_reload_accept)
-            hot_reload_layout.addWidget(hot_reload_reject)
             root_layout.addWidget(hot_reload_bar)
             self._hot_reload_bar = hot_reload_bar
-            self._hot_reload_accept_btn = hot_reload_accept
-            self._hot_reload_reject_btn = hot_reload_reject
             self._hot_reload_label = hot_reload_label
 
             self._hot_reload_timer = self.startTimer(800)
@@ -583,12 +569,6 @@ class MainWindow(QMainWindow):
 
         self.refresh_view()
 
-    def _on_hot_reload_accept(self) -> None:
-        self._write_hot_reload_response("accept")
-
-    def _on_hot_reload_reject(self) -> None:
-        self._write_hot_reload_response("reject")
-
     def timerEvent(self, event):  # type: ignore[override]
         if self._hot_reload_timer is not None and event.timerId() == self._hot_reload_timer:
             self._poll_hot_reload_request()
@@ -598,7 +578,7 @@ class MainWindow(QMainWindow):
     def _poll_hot_reload_request(self) -> None:
         if not self._hot_reload_enabled:
             return
-        if self._hot_reload_request_path is None or self._hot_reload_response_path is None:
+        if self._hot_reload_request_path is None:
             return
 
         if not self._hot_reload_request_path.exists():
@@ -665,22 +645,6 @@ class MainWindow(QMainWindow):
                 continue
             out[key] = payload[key]  # type: ignore[assignment]
         return out
-
-    def _write_hot_reload_response(self, action: str) -> None:
-        if not self._hot_reload_request_id or self._hot_reload_response_path is None:
-            return
-        payload = {
-            "request_id": self._hot_reload_request_id,
-            "action": action,
-        }
-        try:
-            self._hot_reload_response_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._hot_reload_response_path.open("w", encoding="utf-8") as handle:
-                json.dump(payload, handle)
-            if self._hot_reload_bar is not None:
-                self._hot_reload_bar.setVisible(False)
-        except OSError:
-            pass
 
     def _clear_hot_reload_banner(self) -> None:
         if self._hot_reload_bar is not None:
