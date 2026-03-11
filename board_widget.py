@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
@@ -6,7 +6,8 @@ from PySide6.QtCore import QMimeData, QPoint, Qt, Signal
 from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
 
-from models import STAGE_ORDER, Truck, TruckKit
+from models import Truck, TruckKit
+from stages import STAGE_SEQUENCE, Stage, stage_from_id, stage_label
 
 TRUCK_COL_WIDTH = 200
 STAGE_COL_WIDTH = 190
@@ -24,10 +25,6 @@ WEEK_LENS_LANE_LABELS = {
 
 def _format_label(value: str) -> str:
     return value.replace("_", " ").title()
-
-
-def _fmt_week(value: float) -> str:
-    return f"W{value:.1f}"
 
 
 def _normalize_kit_name(value: str) -> str:
@@ -139,7 +136,9 @@ class KitCard(QFrame):
         self.setCursor(Qt.OpenHandCursor)
         self.setAcceptDrops(True)
 
-        is_complete = str(kit.current_stage).strip().lower() == "complete"
+        front_stage = stage_from_id(kit.front_stage_id)
+        back_stage = stage_from_id(kit.back_stage_id)
+        is_complete = front_stage == Stage.COMPLETE
         if is_complete:
             border_color = "#D1D5DB"
             border_width = 1
@@ -172,12 +171,18 @@ class KitCard(QFrame):
         title_label.setWordWrap(True)
         title_label.setStyleSheet(f"font-weight: 700; color: {title_color};")
 
-        meta_label = QLabel(f"{_format_label(kit.release_state)}")
+        meta_label = QLabel(_format_label(kit.release_state))
         meta_label.setWordWrap(True)
         meta_label.setStyleSheet(f"font-size: 10px; color: {meta_color};")
 
         layout.addWidget(title_label)
         layout.addWidget(meta_label)
+
+        if back_stage != front_stage:
+            tail_label = QLabel(f"← {stage_label(back_stage)}")
+            tail_label.setWordWrap(True)
+            tail_label.setStyleSheet("font-size: 10px; font-weight: 700; color: #7C2D12;")
+            layout.addWidget(tail_label)
 
         if release_hold_weeks is not None and not is_complete:
             hold_label = QLabel(f"ENG HOLD: {release_hold_weeks:.1f} week(s) past planned start")
@@ -287,16 +292,16 @@ class KitCard(QFrame):
             event.ignore()
             return
         zone._set_hover(False)
-        zone.kit_dropped.emit(payload[0], zone._stage)
+        zone.kit_dropped.emit(payload[0], zone._stage_id)
         event.acceptProposedAction()
 
 
 class StageDropZone(QFrame):
-    kit_dropped = Signal(int, str)
+    kit_dropped = Signal(int, int)
 
-    def __init__(self, stage: str, truck_id: int, parent: QWidget | None = None):
+    def __init__(self, stage_id: int, truck_id: int, parent: QWidget | None = None):
         super().__init__(parent)
-        self._stage = stage
+        self._stage_id = int(stage_from_id(stage_id))
         self._truck_id = truck_id
         self.setFixedWidth(STAGE_COL_WIDTH)
         self.setAcceptDrops(True)
@@ -349,8 +354,7 @@ class StageDropZone(QFrame):
             event.ignore()
             return
         kit_id, _truck_id = payload
-
-        self.kit_dropped.emit(kit_id, self._stage)
+        self.kit_dropped.emit(kit_id, self._stage_id)
         event.acceptProposedAction()
 
 
@@ -385,13 +389,13 @@ class StageForwardFrame(QFrame):
             event.ignore()
             return
         self._stage_box._set_hover(False)
-        self._stage_box.kit_dropped.emit(payload[0], self._stage_box._stage)
+        self._stage_box.kit_dropped.emit(payload[0], self._stage_box._stage_id)
         event.acceptProposedAction()
 
 
 class TruckRowWidget(QFrame):
     kit_selected = Signal(int)
-    kit_stage_dropped = Signal(int, str)
+    kit_stage_dropped = Signal(int, int)
 
     def __init__(
         self,
@@ -401,7 +405,7 @@ class TruckRowWidget(QFrame):
         kit_release_hold_weeks_by_id: dict[int, float],
         week_lens_enabled: bool = False,
         current_week: float | None = None,
-        kit_stage_windows_by_truck: dict[tuple[int, str, str], tuple[float, float]] | None = None,
+        kit_stage_windows_by_truck: dict[tuple[int, str, int], tuple[float, float]] | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -466,15 +470,16 @@ class TruckRowWidget(QFrame):
         row_layout.addWidget(truck_info)
 
         active_kits = [kit for kit in sorted(truck.kits, key=lambda x: x.kit_order) if kit.is_active]
-        for stage in STAGE_ORDER:
-            stage_box = StageDropZone(stage=stage, truck_id=self._truck_id)
+        for stage in STAGE_SEQUENCE:
+            stage_id = int(stage)
+            stage_box = StageDropZone(stage_id=stage_id, truck_id=self._truck_id)
             stage_box.kit_dropped.connect(self.kit_stage_dropped.emit)
 
             stage_layout = QVBoxLayout(stage_box)
             stage_layout.setContentsMargins(4, 4, 4, 4)
             stage_layout.setSpacing(4)
 
-            stage_kits = [kit for kit in active_kits if kit.current_stage == stage]
+            stage_kits = [kit for kit in active_kits if int(stage_from_id(kit.front_stage_id)) == stage_id]
             if not stage_kits:
                 drop_hint = StageForwardFrame(stage_box=stage_box)
                 drop_hint.setStyleSheet(
@@ -495,22 +500,22 @@ class TruckRowWidget(QFrame):
                 hint_label.setStyleSheet("font-size: 9px; color: #64748B;")
                 drop_hint_layout.addWidget(hint_label)
                 stage_layout.addWidget(drop_hint)
-            elif self._week_lens_enabled and stage != "complete":
-                self._add_cards_week_lens(stage_layout, stage_kits, stage, stage_box)
+            elif self._week_lens_enabled and stage != Stage.COMPLETE:
+                self._add_cards_week_lens(stage_layout, stage_kits, stage_id, stage_box)
             else:
-                self._add_cards_flat(stage_layout, stage_kits, stage)
+                self._add_cards_flat(stage_layout, stage_kits, stage_id)
             stage_layout.addStretch(1)
             row_layout.addWidget(stage_box)
 
-    def _resolve_stage_window(self, kit: TruckKit, stage: str) -> tuple[float, float] | None:
-        key = (self._truck_id, _normalize_kit_name(kit.kit_name), stage)
+    def _resolve_stage_window(self, kit: TruckKit, stage_id: int) -> tuple[float, float] | None:
+        key = (self._truck_id, _normalize_kit_name(kit.kit_name), stage_id)
         return self._kit_stage_windows_by_truck.get(key)
 
-    def _week_bucket_for_kit(self, kit: TruckKit, stage: str) -> str:
-        if str(kit.current_stage).strip().lower() == "complete":
+    def _week_bucket_for_kit(self, kit: TruckKit, stage_id: int) -> str:
+        if stage_from_id(kit.front_stage_id) == Stage.COMPLETE:
             return "unplanned"
 
-        window = self._resolve_stage_window(kit, stage)
+        window = self._resolve_stage_window(kit, stage_id)
         if window is None:
             return "unplanned"
 
@@ -540,7 +545,7 @@ class TruckRowWidget(QFrame):
     def _create_kit_card(
         self,
         kit: TruckKit,
-        stage: str,
+        stage_id: int,
         week_bucket: str | None = None,
     ) -> KitCard:
         hold_weeks = None
@@ -550,27 +555,27 @@ class TruckRowWidget(QFrame):
             kit=kit,
             accent_color=self._accent_color,
             release_hold_weeks=hold_weeks,
-            stage_window=self._resolve_stage_window(kit, stage),
+            stage_window=self._resolve_stage_window(kit, stage_id),
             calendar_year=self._calendar_year,
             week_bucket=week_bucket,
         )
         card.clicked.connect(self.kit_selected.emit)
         return card
 
-    def _add_cards_flat(self, stage_layout: QVBoxLayout, stage_kits: list[TruckKit], stage: str) -> None:
+    def _add_cards_flat(self, stage_layout: QVBoxLayout, stage_kits: list[TruckKit], stage_id: int) -> None:
         for kit in stage_kits:
-            stage_layout.addWidget(self._create_kit_card(kit=kit, stage=stage))
+            stage_layout.addWidget(self._create_kit_card(kit=kit, stage_id=stage_id))
 
     def _add_cards_week_lens(
         self,
         stage_layout: QVBoxLayout,
         stage_kits: list[TruckKit],
-        stage: str,
+        stage_id: int,
         stage_box: StageDropZone,
     ) -> None:
         buckets = {name: [] for name in WEEK_LENS_LANE_ORDER}
         for kit in stage_kits:
-            bucket = self._week_bucket_for_kit(kit, stage)
+            bucket = self._week_bucket_for_kit(kit, stage_id)
             buckets.setdefault(bucket, []).append(kit)
 
         for bucket_name in WEEK_LENS_LANE_ORDER:
@@ -604,7 +609,7 @@ class TruckRowWidget(QFrame):
                 lane_layout.addWidget(
                     self._create_kit_card(
                         kit=kit,
-                        stage=stage,
+                        stage_id=stage_id,
                         week_bucket=bucket_name,
                     )
                 )
@@ -614,7 +619,7 @@ class TruckRowWidget(QFrame):
 
 class BoardWidget(QWidget):
     kit_selected = Signal(int)
-    kit_stage_drop_requested = Signal(int, str)
+    kit_stage_drop_requested = Signal(int, int)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -648,7 +653,7 @@ class BoardWidget(QWidget):
         truck_planned_start_week_by_id: dict[int, float] | None = None,
         kit_release_hold_weeks_by_id: dict[int, float] | None = None,
         current_week: float | None = None,
-        kit_stage_windows_by_truck: dict[tuple[int, str, str], tuple[float, float]] | None = None,
+        kit_stage_windows_by_truck: dict[tuple[int, str, int], tuple[float, float]] | None = None,
     ) -> None:
         _clear_layout(self._content_layout)
         planned_start_map = truck_planned_start_week_by_id or {}
@@ -656,7 +661,7 @@ class BoardWidget(QWidget):
         stage_windows_map = kit_stage_windows_by_truck or {}
 
         if not trucks:
-            empty_label = QLabel("No trucks in flow. Use 'Add Truck' to create one.")
+            empty_label = QLabel("No trucks in flow. Use the CSV registry to add trucks.")
             empty_label.setAlignment(Qt.AlignCenter)
             empty_label.setStyleSheet("padding: 20px; color: #64748B;")
             self._content_layout.addWidget(empty_label)
@@ -696,8 +701,8 @@ class BoardWidget(QWidget):
         truck_header.setStyleSheet("font-weight: 700; color: #334155;")
         header_layout.addWidget(truck_header)
 
-        for stage in STAGE_ORDER:
-            label = QLabel(stage.upper())
+        for stage in STAGE_SEQUENCE:
+            label = QLabel(stage_label(stage).upper())
             label.setWordWrap(True)
             label.setFixedWidth(STAGE_COL_WIDTH)
             label.setAlignment(Qt.AlignCenter)
@@ -705,4 +710,3 @@ class BoardWidget(QWidget):
             header_layout.addWidget(label)
 
         return header_widget
-

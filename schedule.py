@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import re
@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from models import STAGE_ORDER, Truck
+from models import Truck
+from stages import STAGE_SEQUENCE, Stage, stage_from_id, stage_from_key, stage_key
 
 DEFAULT_DAY_ZERO_WEEK = 0.0
 DEFAULT_CURRENT_WEEK = 9.0
@@ -19,37 +20,37 @@ DEFAULT_KIT_LAG_DURATION_WEEKS: dict[str, tuple[float, float]] = {
     "Exterior Pack": (4.0, 3.0),
 }
 DEFAULT_KIT_LAG_DURATION_WEEKS_FALLBACK = (0.7, 0.7)
-DEFAULT_OPERATION_STANDARDS: dict[str, tuple[float, float, float]] = {
-    "release": (0.0, 0.5, 1.5),
-    "laser": (0.0, 1.0, 3.0),
-    "bend": (0.5, 1.0, 3.5),
-    "weld": (1.0, 3.0, 4.0),
+DEFAULT_OPERATION_STANDARDS: dict[Stage, tuple[float, float, float]] = {
+    Stage.RELEASE: (0.0, 0.5, 1.5),
+    Stage.LASER: (0.0, 1.0, 3.0),
+    Stage.BEND: (0.5, 1.0, 3.5),
+    Stage.WELD: (1.0, 3.0, 4.0),
 }
-DEFAULT_KIT_OPERATION_WINDOWS: dict[str, dict[str, tuple[float, float, str, float]]] = {
+DEFAULT_KIT_OPERATION_WINDOWS: dict[str, dict[Stage, tuple[float, float, str, float]]] = {
     "Body": {
-        "laser": (0.0, 1.0, "full", 5.0),
-        "bend": (0.5, 1.5, "full", 5.0),
-        "weld": (1.0, 4.0, "full", 15.0),
+        Stage.LASER: (0.0, 1.0, "full", 5.0),
+        Stage.BEND: (0.5, 1.5, "full", 5.0),
+        Stage.WELD: (1.0, 4.0, "full", 15.0),
     },
     "Pumphouse": {
-        "laser": (2.0, 2.5, "full", 2.5),
-        "bend": (2.5, 3.0, "full", 2.5),
-        "weld": (2.0, 4.0, "full", 10.0),
+        Stage.LASER: (2.0, 2.5, "full", 2.5),
+        Stage.BEND: (2.5, 3.0, "full", 2.5),
+        Stage.WELD: (2.0, 4.0, "full", 10.0),
     },
     "Console Pack": {
-        "laser": (2.5, 3.0, "full", 2.5),
-        "bend": (3.0, 3.5, "full", 2.5),
-        "weld": (3.5, 4.0, "full", 2.5),
+        Stage.LASER: (2.5, 3.0, "full", 2.5),
+        Stage.BEND: (3.0, 3.5, "full", 2.5),
+        Stage.WELD: (3.5, 4.0, "full", 2.5),
     },
     "Interior Pack": {
-        "laser": (4.0, 5.0, "flex", 3.0),
-        "bend": (5.0, 6.0, "flex", 3.0),
-        "weld": (6.0, 7.0, "flex", 3.0),
+        Stage.LASER: (4.0, 5.0, "flex", 3.0),
+        Stage.BEND: (5.0, 6.0, "flex", 3.0),
+        Stage.WELD: (6.0, 7.0, "flex", 3.0),
     },
     "Exterior Pack": {
-        "laser": (4.0, 5.0, "flex", 3.0),
-        "bend": (5.0, 6.0, "flex", 3.0),
-        "weld": (6.0, 7.0, "flex", 3.0),
+        Stage.LASER: (4.0, 5.0, "flex", 3.0),
+        Stage.BEND: (5.0, 6.0, "flex", 3.0),
+        Stage.WELD: (6.0, 7.0, "flex", 3.0),
     },
 }
 DEFAULT_REPEAT_CYCLE = {
@@ -69,7 +70,7 @@ class KitScheduleStandard:
 
 @dataclass
 class OperationStandard:
-    stage: str
+    stage_id: int
     start_offset_weeks: float
     duration_weeks: float
     work_days: float
@@ -81,15 +82,15 @@ class OperationStandard:
 
 @dataclass
 class OperationOverlap:
-    upstream_stage: str
-    downstream_stage: str
+    upstream_stage_id: int
+    downstream_stage_id: int
     overlap_weeks: float
 
 
 @dataclass
 class KitOperationWindow:
     kit_name: str
-    stage: str
+    stage_id: int
     start_week: float
     end_week: float
 
@@ -141,8 +142,8 @@ class ScheduleConfig:
     truck_start_lag_weeks: float
     kit_lag_duration_weeks: dict[str, tuple[float, float]]
     default_kit_lag_duration_weeks: tuple[float, float]
-    operation_standards: dict[str, tuple[float, float, float]]
-    kit_operation_windows: dict[str, dict[str, tuple[float, float]]]
+    operation_standards: dict[int, tuple[float, float, float]]
+    kit_operation_windows: dict[str, dict[int, tuple[float, float]]]
     repeat_cycle: tuple[float, float, float]
 
 
@@ -164,7 +165,7 @@ def _default_config_data() -> dict[str, object]:
             for name, (lag, duration) in DEFAULT_KIT_LAG_DURATION_WEEKS.items()
         },
         "operation_standards": {
-            stage: {
+            stage_key(stage): {
                 "start_offset_weeks": values[0],
                 "duration_weeks": values[1],
                 "work_days": values[2],
@@ -173,7 +174,7 @@ def _default_config_data() -> dict[str, object]:
         },
         "kit_operation_windows": {
             kit_name: {
-                stage: {
+                stage_key(stage): {
                     "start_week": values[0],
                     "end_week": values[1],
                 }
@@ -206,7 +207,6 @@ def _safe_float(value: object, fallback: float) -> float:
 
 
 def _current_year_week() -> float:
-    """Return current ISO week-of-year with a small intra-week fraction."""
     now = datetime.now()
     iso_week = float(now.isocalendar().week)
     intra_week_fraction = (now.weekday() + (now.hour / 24.0)) / 7.0
@@ -253,7 +253,6 @@ def load_schedule_config() -> ScheduleConfig:
     config_path = ensure_schedule_config_file()
 
     try:
-        # Use utf-8-sig so BOM-encoded JSON from Windows editors still loads.
         raw = json.loads(config_path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         raw = _default_config_data()
@@ -262,7 +261,6 @@ def load_schedule_config() -> ScheduleConfig:
         raw = _default_config_data()
 
     day_zero_week = _safe_float(raw.get("day_zero_week"), DEFAULT_DAY_ZERO_WEEK)
-    # Auto-update from live calendar week; config current_week is ignored.
     current_week = max(day_zero_week, _current_year_week())
     truck_start_lag_weeks = max(0.0, _safe_float(raw.get("truck_start_lag_weeks"), DEFAULT_TRUCK_START_LAG_WEEKS))
 
@@ -290,29 +288,36 @@ def load_schedule_config() -> ScheduleConfig:
     if not isinstance(raw_operations, dict):
         raw_operations = {}
 
-    operation_standards: dict[str, tuple[float, float, float]] = {}
+    operation_standards: dict[int, tuple[float, float, float]] = {}
     for stage, fallback_values in DEFAULT_OPERATION_STANDARDS.items():
-        operation_standards[stage] = _parse_operation_standard(raw_operations.get(stage), fallback_values)
+        operation_standards[int(stage)] = _parse_operation_standard(
+            raw_operations.get(stage_key(stage)),
+            fallback_values,
+        )
 
-    for stage, value in raw_operations.items():
-        if not isinstance(stage, str):
+    for key, value in raw_operations.items():
+        stage = stage_from_key(key)
+        if stage is None:
             continue
-        if stage in operation_standards:
+        if int(stage) in operation_standards:
             continue
-        operation_standards[stage] = _parse_operation_standard(value, (0.0, 1.0, 5.0))
+        operation_standards[int(stage)] = _parse_operation_standard(value, (0.0, 1.0, 5.0))
 
     raw_kit_windows = raw.get("kit_operation_windows", {})
     if not isinstance(raw_kit_windows, dict):
         raw_kit_windows = {}
 
-    kit_operation_windows: dict[str, dict[str, tuple[float, float]]] = {}
+    kit_operation_windows: dict[str, dict[int, tuple[float, float]]] = {}
     for kit_name, fallback_stage_map in DEFAULT_KIT_OPERATION_WINDOWS.items():
         raw_stage_map = raw_kit_windows.get(kit_name, {})
         if not isinstance(raw_stage_map, dict):
             raw_stage_map = {}
-        stage_windows: dict[str, tuple[float, float]] = {}
+        stage_windows: dict[int, tuple[float, float]] = {}
         for stage, fallback_window in fallback_stage_map.items():
-            stage_windows[stage] = _parse_start_end_weeks(raw_stage_map.get(stage), fallback_window)
+            stage_windows[int(stage)] = _parse_start_end_weeks(
+                raw_stage_map.get(stage_key(stage)),
+                fallback_window,
+            )
         kit_operation_windows[kit_name] = stage_windows
 
     for kit_name, raw_stage_map in raw_kit_windows.items():
@@ -322,11 +327,12 @@ def load_schedule_config() -> ScheduleConfig:
             continue
         if not isinstance(raw_stage_map, dict):
             continue
-        stage_windows: dict[str, tuple[float, float]] = {}
-        for stage, value in raw_stage_map.items():
-            if not isinstance(stage, str):
+        stage_windows: dict[int, tuple[float, float]] = {}
+        for raw_stage_key, value in raw_stage_map.items():
+            stage = stage_from_key(raw_stage_key)
+            if stage is None:
                 continue
-            stage_windows[stage] = _parse_start_end_weeks(value, (0.0, 1.0))
+            stage_windows[int(stage)] = _parse_start_end_weeks(value, (0.0, 1.0))
         if stage_windows:
             kit_operation_windows[kit_name] = stage_windows
 
@@ -351,13 +357,13 @@ def load_schedule_config() -> ScheduleConfig:
             round(default_kit_lag_duration_weeks[1], 2),
         ),
         operation_standards={
-            stage: (round(vals[0], 2), round(vals[1], 2), round(vals[2], 2))
-            for stage, vals in operation_standards.items()
+            stage_id: (round(vals[0], 2), round(vals[1], 2), round(vals[2], 2))
+            for stage_id, vals in operation_standards.items()
         },
         kit_operation_windows={
             kit_name: {
-                stage: (round(window[0], 2), round(window[1], 2))
-                for stage, window in stage_map.items()
+                stage_id: (round(window[0], 2), round(window[1], 2))
+                for stage_id, window in stage_map.items()
             }
             for kit_name, stage_map in kit_operation_windows.items()
         },
@@ -412,13 +418,16 @@ def _planned_start_date_to_date(value: str) -> date | None:
 
 
 def _build_operation_standards(config: ScheduleConfig) -> list[OperationStandard]:
-    ordered_stages = [stage for stage in STAGE_ORDER if stage in config.operation_standards]
     standards: list[OperationStandard] = []
-    for stage in ordered_stages:
-        values = config.operation_standards[stage]
+    for stage in STAGE_SEQUENCE:
+        if stage == Stage.COMPLETE:
+            continue
+        values = config.operation_standards.get(int(stage))
+        if not values:
+            continue
         standards.append(
             OperationStandard(
-                stage=stage,
+                stage_id=int(stage),
                 start_offset_weeks=values[0],
                 duration_weeks=values[1],
                 work_days=values[2],
@@ -428,12 +437,12 @@ def _build_operation_standards(config: ScheduleConfig) -> list[OperationStandard
 
 
 def _build_operation_overlaps(standards: list[OperationStandard]) -> list[OperationOverlap]:
-    by_stage = {standard.stage: standard for standard in standards}
+    by_stage = {int(standard.stage_id): standard for standard in standards}
     overlaps: list[OperationOverlap] = []
 
-    for upstream_stage, downstream_stage in (("laser", "bend"), ("bend", "weld")):
-        upstream = by_stage.get(upstream_stage)
-        downstream = by_stage.get(downstream_stage)
+    for upstream_stage, downstream_stage in ((Stage.LASER, Stage.BEND), (Stage.BEND, Stage.WELD)):
+        upstream = by_stage.get(int(upstream_stage))
+        downstream = by_stage.get(int(downstream_stage))
         if not upstream or not downstream:
             continue
 
@@ -442,8 +451,8 @@ def _build_operation_overlaps(standards: list[OperationStandard]) -> list[Operat
         if overlap_weeks > 0.0:
             overlaps.append(
                 OperationOverlap(
-                    upstream_stage=upstream_stage,
-                    downstream_stage=downstream_stage,
+                    upstream_stage_id=int(upstream_stage),
+                    downstream_stage_id=int(downstream_stage),
                     overlap_weeks=overlap_weeks,
                 )
             )
@@ -454,14 +463,14 @@ def _build_operation_overlaps(standards: list[OperationStandard]) -> list[Operat
 def _build_kit_operation_windows(config: ScheduleConfig) -> list[KitOperationWindow]:
     windows: list[KitOperationWindow] = []
     kit_order = {name: index for index, name in enumerate(config.kit_lag_duration_weeks.keys())}
-    stage_order_index = {stage: index for index, stage in enumerate(STAGE_ORDER)}
+    stage_order_index = {int(stage): index for index, stage in enumerate(STAGE_SEQUENCE)}
 
     for kit_name, stage_map in config.kit_operation_windows.items():
-        for stage, (start_week, end_week) in stage_map.items():
+        for stage_id, (start_week, end_week) in stage_map.items():
             windows.append(
                 KitOperationWindow(
                     kit_name=kit_name,
-                    stage=stage,
+                    stage_id=int(stage_from_id(stage_id)),
                     start_week=start_week,
                     end_week=end_week,
                 )
@@ -470,7 +479,7 @@ def _build_kit_operation_windows(config: ScheduleConfig) -> list[KitOperationWin
     windows.sort(
         key=lambda item: (
             kit_order.get(item.kit_name, 999),
-            stage_order_index.get(item.stage, 999),
+            stage_order_index.get(item.stage_id, 999),
             item.start_week,
             item.end_week,
         )
@@ -505,8 +514,12 @@ def _build_concurrency_items(trucks: list[Truck]) -> list[ConcurrencyItem]:
         if not active_kits:
             continue
 
-        has_weld_started = any(kit.current_stage in {"weld", "complete"} for kit in active_kits)
-        upstream_open_count = sum(1 for kit in active_kits if kit.current_stage in {"release", "laser", "bend"})
+        has_weld_started = any(stage_from_id(kit.front_stage_id) >= Stage.WELD for kit in active_kits)
+        upstream_open_count = sum(
+            1
+            for kit in active_kits
+            if stage_from_id(kit.back_stage_id) <= Stage.BEND and stage_from_id(kit.front_stage_id) < Stage.COMPLETE
+        )
         if has_weld_started and upstream_open_count > 0:
             items.append(
                 ConcurrencyItem(
@@ -564,10 +577,13 @@ def build_schedule_insights(trucks: list[Truck]) -> ScheduleInsights:
             )
             planned_start_week = round(truck_planned_start_week + lag_weeks, 2)
 
+            front_stage = stage_from_id(kit.front_stage_id)
+            back_stage = stage_from_id(kit.back_stage_id)
             if kit.release_state != "not_released":
                 continue
-            if kit.current_stage != "release":
+            if not (front_stage == Stage.RELEASE and back_stage == Stage.RELEASE):
                 continue
+
             if truck_planned_start_date is not None:
                 planned_start_date = truck_planned_start_date + timedelta(days=(lag_weeks * 7.0))
                 if today < planned_start_date:
@@ -577,6 +593,7 @@ def build_schedule_insights(trucks: list[Truck]) -> ScheduleInsights:
                 if config.current_week < planned_start_week:
                     continue
                 hold_weeks = round(config.current_week - planned_start_week, 2)
+
             if kit.id is not None:
                 kit_release_hold_weeks_by_id[kit.id] = hold_weeks
 

@@ -1,9 +1,9 @@
 @echo off
 setlocal
 cd /d %~dp0
-if not exist ".venv\Scripts\python.exe" (
-  echo ERROR: Shared venv python not found at .venv\Scripts\python.exe
+if not exist "C:\Tools\.venv\Scripts\python.exe" (
+  echo ERROR: Shared venv python not found at C:\Tools\.venv\Scripts\python.exe
   exit /b 1
 )
-.venv\Scripts\python.exe watch_and_run.py
+"C:\Tools\.venv\Scripts\python.exe" watch_and_run.py
 endlocal

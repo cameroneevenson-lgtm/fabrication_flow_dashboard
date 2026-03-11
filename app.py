@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 
 from database import FabricationDatabase
 from main_window import MainWindow
+from truck_registry import CSV_FILENAME, sync_truck_registry
 
 
 def _place_window_on_second_screen(app: QApplication, window: MainWindow) -> None:
@@ -36,6 +37,10 @@ def main() -> int:
     base_dir = Path(__file__).resolve().parent
     database = FabricationDatabase(base_dir / "fabrication_flow.db")
     database.initialize()
+    try:
+        sync_truck_registry(database=database, csv_path=base_dir / CSV_FILENAME)
+    except (OSError, ValueError) as exc:
+        print(f"Truck registry sync skipped: {exc}")
 
     window = MainWindow(database=database)
     window.show()

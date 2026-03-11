@@ -32,8 +32,10 @@ from PySide6.QtWidgets import (
 from board_widget import BoardWidget
 from database import FabricationDatabase
 from metrics import DashboardMetrics, compute_dashboard_metrics, sort_trucks_natural
-from models import RELEASE_STATES, STAGE_ORDER, Truck, TruckKit
+from models import RELEASE_STATES, Truck, TruckKit
 from schedule import ScheduleInsights, build_schedule_insights
+from stages import Stage, normalize_stage_span, stage_from_id, stage_label, stage_options
+from truck_registry import CSV_FILENAME, sync_truck_registry
 
 
 def _fmt_week(value: float) -> str:
@@ -93,9 +95,13 @@ class KitEditDialog(QDialog):
         self._release_combo.addItems(RELEASE_STATES)
         self._release_combo.setCurrentText(kit.release_state)
 
-        self._stage_combo = QComboBox()
-        self._stage_combo.addItems(STAGE_ORDER)
-        self._stage_combo.setCurrentText(kit.current_stage)
+        self._front_stage_combo = QComboBox()
+        self._back_stage_combo = QComboBox()
+        for stage_id, label in stage_options():
+            self._front_stage_combo.addItem(label, stage_id)
+            self._back_stage_combo.addItem(label, stage_id)
+        self._set_stage_combo_value(self._front_stage_combo, kit.front_stage_id)
+        self._set_stage_combo_value(self._back_stage_combo, kit.back_stage_id)
 
         self._blocker_input = QLineEdit(kit.blocker)
         self._pdf_links_input = QPlainTextEdit()
@@ -110,7 +116,8 @@ class KitEditDialog(QDialog):
         form.addRow("Truck", QLabel(truck_number))
         form.addRow("Kit", QLabel(kit.kit_name))
         form.addRow("Release State", self._release_combo)
-        form.addRow("Current Stage", self._stage_combo)
+        form.addRow("Front Stage", self._front_stage_combo)
+        form.addRow("Back Stage", self._back_stage_combo)
         form.addRow("Blocker", self._blocker_input)
         form.addRow("PDF Links", self._pdf_links_input)
         form.addRow("", self._active_checkbox)
@@ -141,6 +148,13 @@ class KitEditDialog(QDialog):
 
     def _mark_removed(self) -> None:
         self._active_checkbox.setChecked(False)
+
+    @staticmethod
+    def _set_stage_combo_value(combo: QComboBox, stage_id: int) -> None:
+        index = combo.findData(int(stage_from_id(stage_id)))
+        if index < 0:
+            index = 0
+        combo.setCurrentIndex(index)
 
     def _normalized_pdf_links(self) -> list[str]:
         values: list[str] = []
@@ -249,49 +263,12 @@ class KitEditDialog(QDialog):
     def get_values(self) -> dict[str, object]:
         return {
             "release_state": self._release_combo.currentText(),
-            "current_stage": self._stage_combo.currentText(),
+            "front_stage_id": int(self._front_stage_combo.currentData()),
+            "back_stage_id": int(self._back_stage_combo.currentData()),
             "blocker": self._blocker_input.text(),
             "pdf_links": "\n".join(self._normalized_pdf_links()),
             "is_active": self._active_checkbox.isChecked(),
         }
-
-
-class AddTruckDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setWindowTitle("Add Truck")
-        self.setModal(True)
-        self.resize(420, 220)
-
-        self._truck_number_input = QLineEdit()
-        self._truck_number_input.setPlaceholderText("Truck number")
-
-        self._client_input = QLineEdit()
-        self._client_input.setPlaceholderText("Client")
-
-        self._planned_start_input = QDateEdit()
-        self._planned_start_input.setCalendarPopup(True)
-        self._planned_start_input.setDisplayFormat("yyyy-MM-dd")
-        self._planned_start_input.setDate(QDate.currentDate())
-
-        form = QFormLayout()
-        form.addRow("Truck F Number", self._truck_number_input)
-        form.addRow("Client", self._client_input)
-        form.addRow("Day Zero", self._planned_start_input)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-
-        layout = QVBoxLayout(self)
-        layout.addLayout(form)
-        layout.addWidget(buttons)
-
-    def get_values(self) -> tuple[str, str, str]:
-        truck_number = self._truck_number_input.text().strip()
-        client = self._client_input.text().strip()
-        planned_start_date = self._planned_start_input.date().toString("yyyy-MM-dd")
-        return (truck_number, client, planned_start_date)
 
 
 class TruckPlanDialog(QDialog):
@@ -511,15 +488,12 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
         controls = QHBoxLayout()
-        add_truck_button = QPushButton("Add Truck")
-        add_truck_button.clicked.connect(self._on_add_truck)
         plan_trucks_button = QPushButton("Manage Truck Plan")
         plan_trucks_button.clicked.connect(self._on_manage_truck_plan)
         wipe_db_button = QPushButton("Wipe DB (Dev)")
         wipe_db_button.clicked.connect(self._on_wipe_db_clicked)
         refresh_button = QPushButton("Refresh")
         refresh_button.clicked.connect(self.refresh_view)
-        controls.addWidget(add_truck_button)
         controls.addWidget(plan_trucks_button)
         controls.addWidget(wipe_db_button)
         controls.addWidget(refresh_button)
@@ -593,10 +567,10 @@ class MainWindow(QMainWindow):
             f"| Active Kits: {len(self._kit_index)} | Engineering Holds: {hold_count}"
         )
 
-    def _build_kit_stage_windows_map(self) -> dict[tuple[int, str, str], tuple[float, float]]:
+    def _build_kit_stage_windows_map(self) -> dict[tuple[int, str, int], tuple[float, float]]:
         if not self._schedule_insights:
             return {}
-        mapping: dict[tuple[int, str, str], tuple[float, float]] = {}
+        mapping: dict[tuple[int, str, int], tuple[float, float]] = {}
         planned_start_by_truck_id = self._schedule_insights.truck_planned_start_week_by_id
         for window in self._schedule_insights.kit_operation_windows:
             kit_name = str(window.kit_name or "").strip().lower()
@@ -606,45 +580,12 @@ class MainWindow(QMainWindow):
                 truck_start_week = planned_start_by_truck_id.get(int(truck.id))
                 if truck_start_week is None:
                     continue
-                key = (int(truck.id), kit_name, window.stage)
+                key = (int(truck.id), kit_name, int(window.stage_id))
                 mapping[key] = (
                     round(truck_start_week + window.start_week, 2),
                     round(truck_start_week + window.end_week, 2),
                 )
         return mapping
-
-    def _on_add_truck(self) -> None:
-        dialog = AddTruckDialog(parent=self)
-        if dialog.exec() != QDialog.Accepted:
-            return
-
-        clean_truck_number, clean_client, clean_planned_start = dialog.get_values()
-        if not clean_truck_number:
-            QMessageBox.warning(self, "Invalid Input", "Truck F number is required.")
-            return
-
-        if not clean_planned_start:
-            QMessageBox.warning(self, "Invalid Input", "Day Zero is required.")
-            return
-
-        try:
-            self.database.create_truck(
-                truck_number=clean_truck_number,
-                client=clean_client,
-                planned_start_date=clean_planned_start,
-            )
-        except sqlite3.IntegrityError:
-            QMessageBox.warning(
-                self,
-                "Duplicate Truck",
-                f"Truck number '{clean_truck_number}' already exists.",
-            )
-            return
-        except ValueError as exc:
-            QMessageBox.warning(self, "Invalid Input", str(exc))
-            return
-
-        self.refresh_view()
 
     def _on_manage_truck_plan(self) -> None:
         all_trucks = sort_trucks_natural(self.database.load_trucks_with_kits(active_only=True))
@@ -678,10 +619,14 @@ class MainWindow(QMainWindow):
 
         try:
             self.database.wipe_database()
+            sync_truck_registry(
+                database=self.database,
+                csv_path=Path(__file__).resolve().parent / CSV_FILENAME,
+            )
         except OSError as exc:
             QMessageBox.critical(self, "Wipe Failed", f"Could not wipe database: {exc}")
             return
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, ValueError) as exc:
             QMessageBox.critical(self, "Wipe Failed", f"Database error: {exc}")
             return
 
@@ -699,11 +644,16 @@ class MainWindow(QMainWindow):
             return
 
         values = dialog.get_values()
+        front_stage_id, back_stage_id = normalize_stage_span(
+            front_stage_id=int(values["front_stage_id"]),
+            back_stage_id=int(values["back_stage_id"]),
+        )
         try:
             self.database.update_truck_kit(
                 kit_id=kit_id,
                 release_state=str(values["release_state"]),
-                current_stage=str(values["current_stage"]),
+                front_stage_id=front_stage_id,
+                back_stage_id=back_stage_id,
                 blocker=str(values["blocker"]),
                 pdf_links=str(values["pdf_links"]),
                 is_active=bool(values["is_active"]),
@@ -713,38 +663,48 @@ class MainWindow(QMainWindow):
             return
         self.refresh_view()
 
-    def _on_kit_stage_drop_requested(self, kit_id: int, target_stage: str) -> None:
+    def _on_kit_stage_drop_requested(self, kit_id: int, target_stage_id: int) -> None:
         result = self._kit_index.get(kit_id)
         if not result:
             return
-        if target_stage not in STAGE_ORDER:
-            return
 
         truck, kit = result
-        current_idx = STAGE_ORDER.index(kit.current_stage)
-        target_idx = STAGE_ORDER.index(target_stage)
-        if target_idx == current_idx:
+        current_stage = stage_from_id(kit.front_stage_id)
+        target_stage = stage_from_id(target_stage_id)
+        if int(target_stage) != int(target_stage_id):
+            return
+        if int(target_stage) == int(current_stage):
             return
 
         release_state = kit.release_state
-        if release_state == "not_released" and target_stage != "release":
+        if release_state == "not_released" and target_stage != Stage.RELEASE:
             # Moving into fabrication implies engineering released the kit.
             release_state = "released"
+
+        next_back_stage_id = int(stage_from_id(kit.back_stage_id))
+        if target_stage == Stage.COMPLETE:
+            next_back_stage_id = int(Stage.COMPLETE)
+
+        front_stage_id, back_stage_id = normalize_stage_span(
+            front_stage_id=int(target_stage),
+            back_stage_id=next_back_stage_id,
+        )
 
         try:
             self.database.update_truck_kit(
                 kit_id=kit_id,
                 release_state=release_state,
-                current_stage=target_stage,
+                front_stage_id=front_stage_id,
+                back_stage_id=back_stage_id,
                 blocker=kit.blocker,
                 is_active=kit.is_active,
             )
         except sqlite3.Error as exc:
-            QMessageBox.critical(self, "Move Failed", f"Could not move kit to {target_stage.upper()}: {exc}")
+            QMessageBox.critical(self, "Move Failed", f"Could not move kit to {stage_label(target_stage)}: {exc}")
             return
         self.refresh_view()
         self.statusBar().showMessage(
-            f"Moved {truck.truck_number} {kit.kit_name} to {target_stage.upper()}",
+            f"Moved {truck.truck_number} {kit.kit_name} to {stage_label(target_stage)}",
             3000,
         )
 
@@ -753,7 +713,7 @@ class MainWindow(QMainWindow):
         active_kits = [kit for kit in truck.kits if kit.is_active]
         if not active_kits:
             return False
-        return all(str(kit.current_stage).strip().lower() == "complete" for kit in active_kits)
+        return all(stage_from_id(kit.front_stage_id) == Stage.COMPLETE for kit in active_kits)
 
     def _build_health_strip(self) -> QWidget:
         strip = QWidget()
@@ -765,7 +725,6 @@ class MainWindow(QMainWindow):
             "next_main": self._create_tile("Next Body Risk"),
             "bend_buffer": self._create_tile("Bend Buffer Health"),
             "weld_feed": self._create_tile("Weld Feed Status"),
-            "release_gap": self._create_tile("Release Gap Warning"),
         }
 
         for tile in self._tile_widgets.values():
@@ -930,7 +889,7 @@ class MainWindow(QMainWindow):
         lines.append("Operation Standards (weeks from Day Zero):")
         for operation in self._schedule_insights.operation_standards:
             lines.append(
-                f"{operation.stage.upper()}: +{operation.start_offset_weeks:.1f}w start, "
+                f"{stage_label(operation.stage_id).upper()}: +{operation.start_offset_weeks:.1f}w start, "
                 f"{operation.duration_weeks:.1f}w duration, "
                 f"{operation.work_days:.1f}d work, "
                 f"{operation.spare_days:+.1f}d spare"
@@ -955,7 +914,7 @@ class MainWindow(QMainWindow):
             grouped: dict[str, list[str]] = {}
             for window in kit_windows:
                 stage_text = (
-                    f"{window.stage.upper()} {_fmt_week(window.start_week)}-{_fmt_week(window.end_week)}"
+                    f"{stage_label(window.stage_id).upper()} {_fmt_week(window.start_week)}-{_fmt_week(window.end_week)}"
                 )
                 grouped.setdefault(window.kit_name, []).append(stage_text)
             for kit_name, stages in grouped.items():
@@ -969,19 +928,21 @@ class MainWindow(QMainWindow):
             lines.append("Planned Overlap Windows:")
             for overlap in overlaps:
                 lines.append(
-                    f"{overlap.upstream_stage.upper()} -> {overlap.downstream_stage.upper()}: "
+                    f"{stage_label(overlap.upstream_stage_id).upper()} -> "
+                    f"{stage_label(overlap.downstream_stage_id).upper()}: "
                     f"{overlap.overlap_weeks:.1f}w overlap"
                 )
         else:
             lines.append("Planned Overlap Windows: none")
 
         lines.append("")
+        weld_label = stage_label(Stage.WELD).lower()
         concurrency_items = self._schedule_insights.concurrency_items
         if concurrency_items:
-            lines.append("Live Concurrency (weld started with upstream still active):")
+            lines.append(f"Live Concurrency ({weld_label} started with upstream still active):")
             for item in concurrency_items[:5]:
                 lines.append(
-                    f"{item.truck_number}: {item.upstream_open_count} upstream kit(s) still in release/laser/bend"
+                    f"{item.truck_number}: {item.upstream_open_count} upstream kit(s) still open"
                 )
             if len(concurrency_items) > 5:
                 lines.append(f"+{len(concurrency_items) - 5} more truck(s)")
@@ -1008,29 +969,21 @@ class MainWindow(QMainWindow):
         self._set_tile(
             "bend_buffer",
             value=f"{metrics.bend_buffer.kit_count} kits ({metrics.bend_buffer.level.upper()})",
-            detail="Released kits in laser/bend",
+            detail=(
+                f"Released kits in {stage_label(Stage.LASER).lower()}/"
+                f"{stage_label(Stage.BEND).lower()}"
+            ),
             tone=metrics.bend_buffer.level,
         )
 
         self._set_tile(
             "weld_feed",
             value=f"{metrics.weld_feed.score:.1f} ({metrics.weld_feed.level.upper()})",
-            detail="Active kits in bend/weld",
+            detail=(
+                f"Active kits in {stage_label(Stage.BEND).lower()}/"
+                f"{stage_label(Stage.WELD).lower()}"
+            ),
             tone=metrics.weld_feed.level,
-        )
-
-        if metrics.release_gap.is_warning:
-            release_value = f"{metrics.release_gap.gap_count} gap(s)"
-            release_tone = "warning"
-        else:
-            release_value = "CLEAR"
-            release_tone = "ok"
-
-        self._set_tile(
-            "release_gap",
-            value=release_value,
-            detail=metrics.release_gap.message,
-            tone=release_tone,
         )
 
     def _set_tile(self, key: str, value: str, detail: str, tone: str) -> None:

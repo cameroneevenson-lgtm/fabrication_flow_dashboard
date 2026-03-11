@@ -4,7 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-STAGE_ORDER = ["release", "laser", "bend", "weld", "complete"]
+from stages import Stage
+
 RELEASE_STATES = ["not_released", "released"]
 
 
@@ -41,7 +42,8 @@ class TruckKit:
     kit_order: int
     is_main_kit: bool
     release_state: str = "not_released"
-    current_stage: str = "release"
+    front_stage_id: int = int(Stage.RELEASE)
+    back_stage_id: int = int(Stage.RELEASE)
     blocker: str = ""
     pdf_links: str = ""
     is_active: bool = True

@@ -1,10 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 
 from models import Truck, TruckKit
 from schedule import ScheduleInsights, build_schedule_insights
+from stages import Stage, stage_from_id, stage_label
 
 
 @dataclass
@@ -26,13 +27,6 @@ class WeldFeedStatus:
 
 
 @dataclass
-class ReleaseGapWarning:
-    is_warning: bool
-    gap_count: int
-    message: str
-
-
-@dataclass
 class AttentionItem:
     priority: int
     title: str
@@ -44,7 +38,6 @@ class DashboardMetrics:
     next_main_kit_risk: NextMainKitRisk
     bend_buffer: BendBufferHealth
     weld_feed: WeldFeedStatus
-    release_gap: ReleaseGapWarning
     attention_items: list[AttentionItem]
 
 
@@ -76,12 +69,10 @@ def compute_dashboard_metrics(
     next_main_kit_risk = _compute_next_main_kit_risk(ordered_trucks)
     bend_buffer = _compute_bend_buffer(ordered_trucks)
     weld_feed = _compute_weld_feed(ordered_trucks)
-    release_gap = _compute_release_gap(ordered_trucks, insights)
     attention_items = _build_attention_items(
         next_main_kit_risk=next_main_kit_risk,
         bend_buffer=bend_buffer,
         weld_feed=weld_feed,
-        release_gap=release_gap,
         schedule_insights=insights,
     )
 
@@ -89,7 +80,6 @@ def compute_dashboard_metrics(
         next_main_kit_risk=next_main_kit_risk,
         bend_buffer=bend_buffer,
         weld_feed=weld_feed,
-        release_gap=release_gap,
         attention_items=attention_items,
     )
 
@@ -116,7 +106,8 @@ def _compute_next_main_kit_risk(trucks: list[Truck]) -> NextMainKitRisk:
         if not current_main_kit or not next_main_kit:
             continue
 
-        if current_main_kit.current_stage == "weld" and next_main_kit.release_state != "released":
+        current_front = stage_from_id(current_main_kit.front_stage_id)
+        if current_front == Stage.WELD and next_main_kit.release_state != "released":
             return NextMainKitRisk(
                 is_warning=True,
                 message=f"{next_truck.truck_number} Body is {next_main_kit.release_state.replace('_', ' ')}.",
@@ -133,7 +124,8 @@ def _compute_bend_buffer(trucks: list[Truck]) -> BendBufferHealth:
                 continue
             if kit.release_state == "not_released":
                 continue
-            if kit.current_stage in {"laser", "bend"}:
+            front_stage = stage_from_id(kit.front_stage_id)
+            if front_stage in {Stage.LASER, Stage.BEND}:
                 count += 1
 
     if count == 0:
@@ -152,7 +144,8 @@ def _compute_weld_feed(trucks: list[Truck]) -> WeldFeedStatus:
         for kit in truck.kits:
             if not kit.is_active:
                 continue
-            if kit.current_stage in {"bend", "weld"}:
+            front_stage = stage_from_id(kit.front_stage_id)
+            if front_stage in {Stage.BEND, Stage.WELD}:
                 score += 1.0
 
     if score < 2.0:
@@ -165,42 +158,10 @@ def _compute_weld_feed(trucks: list[Truck]) -> WeldFeedStatus:
     return WeldFeedStatus(score=round(score, 1), level=level)
 
 
-def _compute_release_gap(trucks: list[Truck], schedule_insights: ScheduleInsights) -> ReleaseGapWarning:
-    hold_count = len(schedule_insights.release_hold_items)
-    if hold_count > 0:
-        oldest_hold = schedule_insights.release_hold_items[0]
-        return ReleaseGapWarning(
-            is_warning=True,
-            gap_count=hold_count,
-            message=(
-                f"{hold_count} kit(s) are blocked by engineering release; "
-                f"oldest hold is {oldest_hold.hold_weeks:.1f} week(s)."
-            ),
-        )
-
-    body_gap_count = 0
-    for truck in trucks:
-        main_kit = _find_main_body_kit(truck)
-        if not main_kit:
-            continue
-        if main_kit.release_state == "not_released":
-            body_gap_count += 1
-
-    if body_gap_count > 0:
-        return ReleaseGapWarning(
-            is_warning=True,
-            gap_count=body_gap_count,
-            message=f"{body_gap_count} Body kit(s) not released.",
-        )
-
-    return ReleaseGapWarning(is_warning=False, gap_count=0, message="Body releases are covered.")
-
-
 def _build_attention_items(
     next_main_kit_risk: NextMainKitRisk,
     bend_buffer: BendBufferHealth,
     weld_feed: WeldFeedStatus,
-    release_gap: ReleaseGapWarning,
     schedule_insights: ScheduleInsights,
 ) -> list[AttentionItem]:
     items: list[AttentionItem] = []
@@ -216,28 +177,6 @@ def _build_attention_items(
                     f"oldest {oldest.hold_weeks:.1f} week(s) "
                     f"({oldest.truck_number} {oldest.kit_name})."
                 ),
-            )
-        )
-
-    cycle_plan = schedule_insights.cycle_plan
-    if schedule_insights.release_hold_items and cycle_plan.odd_jobs_weeks > 0.0:
-        if cycle_plan.in_odd_jobs_window:
-            priority = 92
-            detail = (
-                f"Release holds are consuming the odd-jobs week "
-                f"(cycle {cycle_plan.cycle_position_week:.1f}/{cycle_plan.cycle_weeks:.1f})."
-            )
-        else:
-            priority = 78
-            detail = (
-                f"Late releases reduce odd-jobs reserve "
-                f"({cycle_plan.odd_jobs_weeks:.1f}w each {cycle_plan.cycle_weeks:.1f}w cycle)."
-            )
-        items.append(
-            AttentionItem(
-                priority=priority,
-                title="Odd-jobs buffer at risk",
-                detail=detail,
             )
         )
 
@@ -259,12 +198,14 @@ def _build_attention_items(
             )
         )
 
+    laser_label = stage_label(Stage.LASER).lower()
+    bend_label = stage_label(Stage.BEND).lower()
     if bend_buffer.level == "empty":
         items.append(
             AttentionItem(
                 priority=85,
                 title="Bend buffer empty",
-                detail="No released kits are in laser/bend.",
+                detail=f"No released kits are in {laser_label}/{bend_label}.",
             )
         )
     elif bend_buffer.level == "low":
@@ -272,33 +213,22 @@ def _build_attention_items(
             AttentionItem(
                 priority=80,
                 title="Bend buffer low",
-                detail=f"Only {bend_buffer.kit_count} kit(s) are approaching bend.",
-            )
-        )
-
-    if release_gap.is_warning:
-        items.append(
-            AttentionItem(
-                priority=70,
-                title="Release gap warning",
-                detail=release_gap.message,
+                detail=f"Only {bend_buffer.kit_count} kit(s) are approaching {bend_label}.",
             )
         )
 
     operation_standards = schedule_insights.operation_standards
-    overloaded_stages = [op.stage.upper() for op in operation_standards if op.spare_days < 0.0]
-    low_spare_stages = [op.stage.upper() for op in operation_standards if 0.0 <= op.spare_days < 1.0]
+    overloaded_stages = [stage_label(op.stage_id).upper() for op in operation_standards if op.spare_days < 0.0]
+    low_spare_stages = [
+        stage_label(op.stage_id).upper() for op in operation_standards if 0.0 <= op.spare_days < 1.0
+    ]
 
     if overloaded_stages:
         items.append(
             AttentionItem(
                 priority=88,
                 title="Operation standard is overbooked",
-                detail=(
-                    "Planned work exceeds available duration in: "
-                    + ", ".join(overloaded_stages)
-                    + "."
-                ),
+                detail=("Planned work exceeds available duration in: " + ", ".join(overloaded_stages) + "."),
             )
         )
     elif low_spare_stages:
@@ -306,24 +236,7 @@ def _build_attention_items(
             AttentionItem(
                 priority=72,
                 title="Spare capacity is tight",
-                detail=(
-                    "Less than 1 spare day in: "
-                    + ", ".join(low_spare_stages)
-                    + "."
-                ),
-            )
-        )
-
-    if schedule_insights.concurrency_items:
-        top = schedule_insights.concurrency_items[0]
-        items.append(
-            AttentionItem(
-                priority=74,
-                title="Concurrent flow active",
-                detail=(
-                    f"{len(schedule_insights.concurrency_items)} truck(s) have weld started while upstream is still open; "
-                    f"example: {top.truck_number} with {top.upstream_open_count} upstream kit(s)."
-                ),
+                detail=("Less than 1 spare day in: " + ", ".join(low_spare_stages) + "."),
             )
         )
 
