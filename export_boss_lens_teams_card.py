@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from database import FabricationDatabase
-from metrics import compute_boss_lens_metrics, compute_dashboard_metrics, sort_trucks_natural
+from metrics import compute_dashboard_metrics, sort_trucks_natural
 from schedule import build_schedule_insights
 from stages import Stage, stage_from_id
 from teams_card import build_teams_webhook_payload
@@ -43,7 +43,7 @@ def _post_payload(webhook_url: str, payload: dict[str, object]) -> tuple[int, st
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Export Management Summary as a Microsoft Teams Adaptive Card webhook JSON payload."
+        description="Export the operations dashboard snapshot as a Microsoft Teams Adaptive Card webhook JSON payload."
     )
     parser.add_argument(
         "--output",
@@ -74,14 +74,11 @@ def main() -> int:
 
     schedule_insights = build_schedule_insights(active_trucks)
     dashboard_metrics = compute_dashboard_metrics(active_trucks, schedule_insights=schedule_insights)
-    boss_metrics = compute_boss_lens_metrics(
-        active_trucks,
-        schedule_insights=schedule_insights,
-        dashboard_metrics=dashboard_metrics,
-    )
 
     payload = build_teams_webhook_payload(
-        boss_metrics,
+        trucks=active_trucks,
+        dashboard_metrics=dashboard_metrics,
+        schedule_insights=schedule_insights,
         max_trucks=max(1, int(args.max_trucks)),
         generated_at=datetime.now(timezone.utc),
     )

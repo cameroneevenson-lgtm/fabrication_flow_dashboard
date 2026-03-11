@@ -1,0 +1,391 @@
+{
+  "type": "message",
+  "attachments": [
+    {
+      "contentType": "application/vnd.microsoft.card.adaptive",
+      "contentUrl": null,
+      "content": {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "msteams": {
+          "width": "Full"
+        },
+        "body": [
+          {
+            "type": "TextBlock",
+            "text": "Fabrication Flow Dashboard - Boss Lens",
+            "size": "Large",
+            "weight": "Bolder",
+            "wrap": true
+          },
+          {
+            "type": "TextBlock",
+            "text": "Generated: 2026-03-11 14:10 Eastern Summer Time",
+            "isSubtle": true,
+            "spacing": "None",
+            "wrap": true
+          },
+          {
+            "type": "TextBlock",
+            "text": "Top-Level Summary",
+            "weight": "Bolder",
+            "spacing": "Medium",
+            "wrap": true
+          },
+          {
+            "type": "ColumnSet",
+            "columns": [
+              {
+                "type": "Column",
+                "width": "stretch",
+                "items": [
+                  {
+                    "type": "TextBlock",
+                    "text": "Active Trucks",
+                    "size": "Small",
+                    "isSubtle": true,
+                    "wrap": true
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "5",
+                    "weight": "Bolder",
+                    "size": "Medium",
+                    "color": "Good",
+                    "wrap": true
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "Current trucks in active flow.",
+                    "size": "Small",
+                    "wrap": true,
+                    "spacing": "None"
+                  }
+                ]
+              },
+              {
+                "type": "Column",
+                "width": "stretch",
+                "items": [
+                  {
+                    "type": "TextBlock",
+                    "text": "Next Main Kit Released",
+                    "size": "Small",
+                    "isSubtle": true,
+                    "wrap": true
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "Yes",
+                    "weight": "Bolder",
+                    "size": "Medium",
+                    "color": "Good",
+                    "wrap": true
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "Next Body release is aligned.",
+                    "size": "Small",
+                    "wrap": true,
+                    "spacing": "None"
+                  }
+                ]
+              },
+              {
+                "type": "Column",
+                "width": "stretch",
+                "items": [
+                  {
+                    "type": "TextBlock",
+                    "text": "Bend Buffer Health",
+                    "size": "Small",
+                    "isSubtle": true,
+                    "wrap": true
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "WATCH",
+                    "weight": "Bolder",
+                    "size": "Medium",
+                    "color": "Warning",
+                    "wrap": true
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "1 kit(s) in laser/bend.",
+                    "size": "Small",
+                    "wrap": true,
+                    "spacing": "None"
+                  }
+                ]
+              },
+              {
+                "type": "Column",
+                "width": "stretch",
+                "items": [
+                  {
+                    "type": "TextBlock",
+                    "text": "Weld Feed Health",
+                    "size": "Small",
+                    "isSubtle": true,
+                    "wrap": true
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "HEALTHY",
+                    "weight": "Bolder",
+                    "size": "Medium",
+                    "color": "Good",
+                    "wrap": true
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "Score 6.0.",
+                    "size": "Small",
+                    "wrap": true,
+                    "spacing": "None"
+                  }
+                ]
+              }
+            ],
+            "spacing": "Small"
+          },
+          {
+            "type": "ColumnSet",
+            "columns": [
+              {
+                "type": "Column",
+                "width": "stretch",
+                "items": [
+                  {
+                    "type": "TextBlock",
+                    "text": "Kits Behind Master Schedule",
+                    "size": "Small",
+                    "isSubtle": true,
+                    "wrap": true
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "9",
+                    "weight": "Bolder",
+                    "size": "Medium",
+                    "color": "Attention",
+                    "wrap": true
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "Compared to fixed schedule baseline.",
+                    "size": "Small",
+                    "wrap": true,
+                    "spacing": "None"
+                  }
+                ]
+              },
+              {
+                "type": "Column",
+                "width": "stretch",
+                "items": [
+                  {
+                    "type": "TextBlock",
+                    "text": "Late Releases",
+                    "size": "Small",
+                    "isSubtle": true,
+                    "wrap": true
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "4",
+                    "weight": "Bolder",
+                    "size": "Medium",
+                    "color": "Attention",
+                    "wrap": true
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "Kits still not released past planned start.",
+                    "size": "Small",
+                    "wrap": true,
+                    "spacing": "None"
+                  }
+                ]
+              },
+              {
+                "type": "Column",
+                "width": "stretch",
+                "items": [
+                  {
+                    "type": "TextBlock",
+                    "text": "Blocked Kits",
+                    "size": "Small",
+                    "isSubtle": true,
+                    "wrap": true
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "1",
+                    "weight": "Bolder",
+                    "size": "Medium",
+                    "color": "Warning",
+                    "wrap": true
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "Kits with blocker text present.",
+                    "size": "Small",
+                    "wrap": true,
+                    "spacing": "None"
+                  }
+                ]
+              }
+            ],
+            "spacing": "Small"
+          },
+          {
+            "type": "TextBlock",
+            "text": "Master Schedule Sync",
+            "weight": "Bolder",
+            "spacing": "Medium",
+            "wrap": true
+          },
+          {
+            "type": "TextBlock",
+            "text": "11 kits in sync, 9 kits behind, 5 kits ahead.",
+            "wrap": true
+          },
+          {
+            "type": "TextBlock",
+            "text": "Release Alignment",
+            "weight": "Bolder",
+            "spacing": "Medium",
+            "wrap": true
+          },
+          {
+            "type": "TextBlock",
+            "text": "4 kit(s) late release.",
+            "wrap": true
+          },
+          {
+            "type": "TextBlock",
+            "text": "Flow Health",
+            "weight": "Bolder",
+            "spacing": "Medium",
+            "wrap": true
+          },
+          {
+            "type": "TextBlock",
+            "text": "Bend Buffer=WATCH | Weld Feed=HEALTHY | Active Trucks=5 | Blocked Kits=1",
+            "wrap": true
+          },
+          {
+            "type": "TextBlock",
+            "text": "Per-Truck Summary",
+            "weight": "Bolder",
+            "spacing": "Medium",
+            "wrap": true
+          },
+          {
+            "type": "Container",
+            "separator": true,
+            "spacing": "Small",
+            "items": [
+              {
+                "type": "TextBlock",
+                "text": "F55974 | Main Kit: Complete | Sync: Ahead | Main Released: Yes",
+                "weight": "Bolder",
+                "wrap": true
+              },
+              {
+                "type": "TextBlock",
+                "text": "Risk: In Sync. None.",
+                "color": "Good",
+                "wrap": true,
+                "spacing": "None"
+              }
+            ]
+          },
+          {
+            "type": "Container",
+            "separator": true,
+            "spacing": "Small",
+            "items": [
+              {
+                "type": "TextBlock",
+                "text": "F55985 | Main Kit: Weld | Sync: Behind | Main Released: Yes",
+                "weight": "Bolder",
+                "wrap": true
+              },
+              {
+                "type": "TextBlock",
+                "text": "Risk: Blocked. 1 blocked kit(s).",
+                "color": "Attention",
+                "wrap": true,
+                "spacing": "None"
+              }
+            ]
+          },
+          {
+            "type": "Container",
+            "separator": true,
+            "spacing": "Small",
+            "items": [
+              {
+                "type": "TextBlock",
+                "text": "F55334 | Main Kit: Bend | Sync: Behind | Main Released: Yes",
+                "weight": "Bolder",
+                "wrap": true
+              },
+              {
+                "type": "TextBlock",
+                "text": "Risk: Late Release. 3 kit(s) late release.",
+                "color": "Attention",
+                "wrap": true,
+                "spacing": "None"
+              }
+            ]
+          },
+          {
+            "type": "Container",
+            "separator": true,
+            "spacing": "Small",
+            "items": [
+              {
+                "type": "TextBlock",
+                "text": "F56139 | Main Kit: Release | Sync: Behind | Main Released: No",
+                "weight": "Bolder",
+                "wrap": true
+              },
+              {
+                "type": "TextBlock",
+                "text": "Risk: Late Release. 1 kit(s) late release.",
+                "color": "Attention",
+                "wrap": true,
+                "spacing": "None"
+              }
+            ]
+          },
+          {
+            "type": "Container",
+            "separator": true,
+            "spacing": "Small",
+            "items": [
+              {
+                "type": "TextBlock",
+                "text": "F56724 | Main Kit: Release | Sync: In Sync | Main Released: No",
+                "weight": "Bolder",
+                "wrap": true
+              },
+              {
+                "type": "TextBlock",
+                "text": "Risk: In Sync. None.",
+                "color": "Good",
+                "wrap": true,
+                "spacing": "None"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

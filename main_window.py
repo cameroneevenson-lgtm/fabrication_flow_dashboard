@@ -1450,19 +1450,19 @@ class MainWindow(QMainWindow):
         if self._schedule_insights is None:
             self.refresh_view()
             if self._schedule_insights is None:
-                QMessageBox.warning(self, "No Data", "No management summary data is available to publish.")
+                QMessageBox.warning(self, "No Data", "No dashboard data is available to publish.")
                 return
 
         dashboard_metrics = compute_dashboard_metrics(
             self._trucks,
             schedule_insights=self._schedule_insights,
         )
-        boss_metrics = compute_boss_lens_metrics(
-            self._trucks,
-            schedule_insights=self._schedule_insights,
+        payload = build_teams_webhook_payload(
+            trucks=self._trucks,
             dashboard_metrics=dashboard_metrics,
+            schedule_insights=self._schedule_insights,
+            max_trucks=20,
         )
-        payload = build_teams_webhook_payload(boss_metrics, max_trucks=20)
 
         output_path = Path(__file__).resolve().parent / "_runtime" / "boss_lens_teams_card.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1470,11 +1470,11 @@ class MainWindow(QMainWindow):
 
         try:
             status = self._post_json_webhook(webhook_url, payload)
-            self.statusBar().showMessage(f"Published Management Summary to Teams ({status}).", 4000)
+            self.statusBar().showMessage(f"Published dashboard snapshot to Teams ({status}).", 4000)
             QMessageBox.information(
                 self,
                 "Published",
-                f"Management summary published to Teams.\nHTTP status: {status}\nPayload: {output_path}",
+                f"Dashboard snapshot published to Teams.\nHTTP status: {status}\nPayload: {output_path}",
             )
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace").strip()
@@ -1520,7 +1520,7 @@ class MainWindow(QMainWindow):
                         "body": [
                             {
                                 "type": "TextBlock",
-                                "text": "Management Summary Teams Auth Test",
+                                "text": "Fabrication Dashboard Teams Auth Test",
                                 "weight": "Bolder",
                                 "wrap": True,
                             },

@@ -51,14 +51,14 @@ A PySide6 application for tracking fabrication flow and schedule signals.
 - `stages.py` - canonical `Stage` enum and metadata
 - `schedule.py` - schedule insights and release/concurrency calculations
 - `metrics.py` - dashboard metrics and attention signals
-- `teams_card.py` - Management Summary to Microsoft Teams Adaptive Card payload builder
+- `teams_card.py` - Operations dashboard snapshot to Microsoft Teams Adaptive Card payload builder
 - `export_boss_lens_teams_card.py` - export/post Teams webhook JSON payload
 - `truck_registry.csv` - truck registry input
 - `fabrication_flow.db` - local operational state
 
-## Teams Adaptive Card payload (Management Summary)
+## Teams Adaptive Card payload (Operations Dashboard)
 
-Management Summary now includes a `Publish to Teams` button.
+The app includes a `Publish to Teams` button for an operations snapshot.
 
 - Open the `Management Summary` tab.
 - The webhook URL is pre-filled with the project default.
