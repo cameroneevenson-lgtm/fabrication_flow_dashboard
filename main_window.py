@@ -4,6 +4,8 @@ import os
 import re
 import sqlite3
 import json
+import urllib.error
+import urllib.request
 from datetime import date, timedelta
 from pathlib import Path
 import time
@@ -50,6 +52,7 @@ from metrics import (
 from models import RELEASE_STATES, Truck, TruckKit
 from schedule import ScheduleInsights, build_schedule_insights
 from stages import STAGE_SEQUENCE, Stage, normalize_stage_span, stage_from_id, stage_label, stage_options
+from teams_card import build_teams_webhook_payload
 
 
 def _fmt_week(value: float) -> str:
@@ -675,6 +678,37 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
+
+        publish_panel = QFrame()
+        publish_panel.setFrameShape(QFrame.StyledPanel)
+        publish_panel.setStyleSheet(
+            """
+            QFrame {
+                background-color: #F8FAFC;
+                border: 1px solid #D5DEE7;
+                border-radius: 8px;
+            }
+            """
+        )
+        publish_layout = QHBoxLayout(publish_panel)
+        publish_layout.setContentsMargins(10, 8, 10, 8)
+        publish_layout.setSpacing(8)
+
+        publish_label = QLabel("Teams Webhook URL")
+        publish_label.setStyleSheet("font-size: 12px; color: #334155;")
+        publish_layout.addWidget(publish_label)
+
+        default_webhook = os.environ.get("FAB_FLOW_TEAMS_WEBHOOK_URL", "").strip()
+        self._teams_webhook_input = QLineEdit(default_webhook)
+        self._teams_webhook_input.setPlaceholderText(
+            "Paste Power Automate / Teams webhook URL"
+        )
+        publish_layout.addWidget(self._teams_webhook_input, 1)
+
+        publish_button = QPushButton("Publish to Teams")
+        publish_button.clicked.connect(self._publish_boss_lens_to_teams)
+        publish_layout.addWidget(publish_button)
+        layout.addWidget(publish_panel)
 
         tiles_panel = QFrame()
         tiles_panel.setFrameShape(QFrame.StyledPanel)
@@ -1356,6 +1390,75 @@ class MainWindow(QMainWindow):
                 risk_item.setForeground(QColor(tone_color))
             if issue_item is not None:
                 issue_item.setForeground(QColor(tone_color))
+
+    def _publish_boss_lens_to_teams(self) -> None:
+        webhook_url = str(self._teams_webhook_input.text() if hasattr(self, "_teams_webhook_input") else "").strip()
+        if not webhook_url:
+            QMessageBox.warning(
+                self,
+                "Webhook URL Required",
+                "Enter a Teams/Power Automate webhook URL first.",
+            )
+            return
+
+        if self._schedule_insights is None:
+            self.refresh_view()
+            if self._schedule_insights is None:
+                QMessageBox.warning(self, "No Data", "No Boss Lens data is available to publish.")
+                return
+
+        dashboard_metrics = compute_dashboard_metrics(
+            self._trucks,
+            schedule_insights=self._schedule_insights,
+        )
+        boss_metrics = compute_boss_lens_metrics(
+            self._trucks,
+            schedule_insights=self._schedule_insights,
+            dashboard_metrics=dashboard_metrics,
+        )
+        payload = build_teams_webhook_payload(boss_metrics, max_trucks=20)
+
+        output_path = Path(__file__).resolve().parent / "_runtime" / "boss_lens_teams_card.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+        raw = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            webhook_url,
+            data=raw,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                status = int(getattr(response, "status", response.getcode()))
+            self.statusBar().showMessage(f"Published Boss Lens to Teams ({status}).", 4000)
+            QMessageBox.information(
+                self,
+                "Published",
+                f"Boss Lens published to Teams.\nHTTP status: {status}\nPayload: {output_path}",
+            )
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace").strip()
+            body = f"\n\n{detail}" if detail else ""
+            QMessageBox.critical(
+                self,
+                "Publish Failed",
+                f"Webhook HTTP error {exc.code}: {exc.reason}{body}",
+            )
+        except urllib.error.URLError as exc:
+            QMessageBox.critical(
+                self,
+                "Publish Failed",
+                f"Webhook URL error: {exc.reason}",
+            )
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "Publish Failed",
+                f"Unexpected error while publishing: {exc}",
+            )
 
 
 
