@@ -47,7 +47,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--output",
-        default="_runtime/boss_lens_teams_card.json",
+        default="_runtime/teams_dashboard_card.json",
         help="Output path for the JSON payload.",
     )
     parser.add_argument(
@@ -115,3 +115,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

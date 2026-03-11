@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import re
@@ -7,11 +7,12 @@ import json
 import urllib.error
 import urllib.request
 from datetime import date, timedelta
+from io import BytesIO
 from pathlib import Path
 import time
 
-from PySide6.QtCore import QDate, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QDate, Qt, QTimer
+from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -33,6 +34,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -51,7 +54,7 @@ from metrics import (
 from models import RELEASE_STATES, Truck, TruckKit
 from schedule import ScheduleInsights, build_schedule_insights
 from stages import STAGE_SEQUENCE, Stage, normalize_stage_span, stage_from_id, stage_label, stage_options
-from teams_card import build_teams_webhook_payload
+from teams_card import build_teams_gantt_only_webhook_payload, build_teams_webhook_payload
 
 DEFAULT_TEAMS_WEBHOOK_URL = (
     "https://default97009fec357647f39ce0fc3d1496b7.b8.environment.api.powerplatform.com:443/"
@@ -688,10 +691,13 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         plan_trucks_button = QPushButton("Manage Truck Plan")
         plan_trucks_button.clicked.connect(self._on_manage_truck_plan)
-        refresh_button = QPushButton("Refresh")
-        refresh_button.clicked.connect(self.refresh_view)
         controls.addWidget(plan_trucks_button)
-        controls.addWidget(refresh_button)
+        publish_button = QPushButton("Publish to Teams")
+        publish_button.clicked.connect(self._publish_boss_lens_to_teams)
+        controls.addWidget(publish_button)
+        publish_gantt_button = QPushButton("Publish Gantt to Teams")
+        publish_gantt_button.clicked.connect(self._publish_gantt_only_to_teams)
+        controls.addWidget(publish_gantt_button)
         controls.addStretch(1)
 
         self._status_label = QLabel("")
@@ -703,24 +709,38 @@ class MainWindow(QMainWindow):
         self._health_strip = self._build_health_strip()
         layout.addWidget(self._health_strip)
 
-        middle_layout = QHBoxLayout()
-        middle_layout.setSpacing(10)
-
         self._board_widget = BoardWidget()
         self._board_widget.set_week_lens_enabled(self._week_lens_enabled)
         self._board_widget.kit_selected.connect(self._on_kit_selected)
         self._board_widget.kit_stage_drop_requested.connect(self._on_kit_stage_drop_requested)
         self._board_widget.kit_tail_forward_requested.connect(self._on_kit_tail_forward_requested)
-        middle_layout.addWidget(self._board_widget, 4)
 
         right_column = QWidget()
         right_column_layout = QVBoxLayout(right_column)
         right_column_layout.setContentsMargins(0, 0, 0, 0)
         right_column_layout.setSpacing(10)
         right_column_layout.addWidget(self._build_attention_panel(), 1)
-        middle_layout.addWidget(right_column, 1)
 
-        layout.addLayout(middle_layout)
+        board_gantt_splitter = QSplitter(Qt.Vertical)
+        board_gantt_splitter.addWidget(self._board_widget)
+        board_gantt_splitter.addWidget(self._build_gantt_panel())
+        board_gantt_splitter.setStretchFactor(0, 4)
+        board_gantt_splitter.setStretchFactor(1, 1)
+        board_gantt_splitter.setCollapsible(0, False)
+        board_gantt_splitter.setCollapsible(1, True)
+        board_gantt_splitter.setSizes([760, 240])
+        self._board_gantt_splitter = board_gantt_splitter
+
+        main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter.addWidget(board_gantt_splitter)
+        main_splitter.addWidget(right_column)
+        main_splitter.setStretchFactor(0, 4)
+        main_splitter.setStretchFactor(1, 1)
+        main_splitter.setCollapsible(0, False)
+        main_splitter.setCollapsible(1, True)
+        main_splitter.setSizes([1240, 360])
+
+        layout.addWidget(main_splitter, 1)
         return tab
 
     def _build_boss_lens_tab(self) -> QWidget:
@@ -911,6 +931,7 @@ class MainWindow(QMainWindow):
         metrics = compute_dashboard_metrics(self._trucks, schedule_insights=self._schedule_insights)
         self._update_health_strip(metrics)
         self._update_attention_panel(metrics)
+        self._update_gantt_panel()
 
         hold_count = len(self._schedule_insights.release_hold_items)
         self._status_label.setText(
@@ -1184,6 +1205,552 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._attention_list)
 
         return panel
+
+    def _build_gantt_panel(self) -> QWidget:
+        panel = QFrame()
+        self._gantt_panel = panel
+        panel.setFrameShape(QFrame.StyledPanel)
+        panel.setStyleSheet(
+            """
+            QFrame {
+                background-color: #F8FAFC;
+                border: 1px solid #D5DEE7;
+                border-radius: 8px;
+            }
+            """
+        )
+
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        title = QLabel("Master Schedule vs Actual")
+        self._gantt_title_label = title
+        title.setWordWrap(True)
+        title.setStyleSheet("font-size: 15px; font-weight: 700; color: #0F172A;")
+        layout.addWidget(title)
+
+        self._gantt_meta_label = QLabel("")
+        self._gantt_meta_label.setWordWrap(True)
+        self._gantt_meta_label.setStyleSheet("font-size: 11px; color: #475569;")
+        layout.addWidget(self._gantt_meta_label)
+
+        self._gantt_chart_scroll = QScrollArea()
+        self._gantt_chart_scroll.setWidgetResizable(False)
+        self._gantt_chart_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._gantt_chart_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._gantt_chart_scroll.setStyleSheet(
+            """
+            QScrollArea {
+                background: #FFFFFF;
+                border: 1px solid #CBD5E1;
+                border-radius: 6px;
+            }
+            """
+        )
+        self._gantt_chart_label = QLabel("")
+        self._gantt_chart_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self._gantt_chart_label.setStyleSheet("background: #FFFFFF;")
+        self._gantt_chart_scroll.setWidget(self._gantt_chart_label)
+        self._gantt_chart_scroll.setVisible(False)
+        layout.addWidget(self._gantt_chart_scroll)
+
+        self._gantt_table = QTableWidget(0, 3)
+        self._gantt_table.setHorizontalHeaderLabels(["Truck", "Scheduled", "Actual"])
+        self._gantt_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._gantt_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self._gantt_table.setAlternatingRowColors(True)
+        self._gantt_table.verticalHeader().setVisible(False)
+        self._gantt_table.setStyleSheet(
+            """
+            QTableWidget {
+                background: #FFFFFF;
+                border: 1px solid #CBD5E1;
+                border-radius: 6px;
+                font-family: Consolas, "Courier New", monospace;
+                font-size: 11px;
+            }
+            """
+        )
+        header = self._gantt_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        layout.addWidget(self._gantt_table)
+
+        return panel
+
+    @staticmethod
+    def _week_to_chart_index(week_value: float, min_week: float, max_week: float, width: int) -> int:
+        if width <= 1:
+            return 0
+        span = max(0.0001, float(max_week - min_week))
+        ratio = (float(week_value) - min_week) / span
+        idx = int(round(ratio * float(width - 1)))
+        return max(0, min(width - 1, idx))
+
+    @staticmethod
+    def _normalize_week_around_current(week_value: float, current_week: float) -> float:
+        value = float(week_value)
+        current = float(current_week)
+        cycle = 52.0
+        while (value - current) > 26.0:
+            value -= cycle
+        while (current - value) > 26.0:
+            value += cycle
+        return value
+
+    @staticmethod
+    def _week_value_to_date_label(week_value: float, current_week: float) -> str:
+        today = date.today()
+        current_monday = today - timedelta(days=today.weekday())
+        delta_days = (float(week_value) - float(current_week)) * 7.0
+        target_date = current_monday + timedelta(days=delta_days)
+        return target_date.strftime("%b %d, %Y")
+
+    @staticmethod
+    def _find_body_kit(truck: Truck) -> TruckKit | None:
+        for kit in truck.kits:
+            if not kit.is_active:
+                continue
+            if kit.is_main_kit or str(kit.kit_name).strip().lower() == "body":
+                return kit
+        return None
+
+    def _set_gantt_message(self, message: str) -> None:
+        if hasattr(self, "_gantt_chart_label"):
+            self._gantt_chart_label.clear()
+        if hasattr(self, "_gantt_chart_scroll"):
+            self._gantt_chart_scroll.setVisible(False)
+        self._gantt_table.setVisible(True)
+        self._gantt_table.setRowCount(1)
+        for col in range(3):
+            text = message if col == 0 else ""
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            self._gantt_table.setItem(0, col, item)
+        self._queue_gantt_pane_autosize()
+
+    def _queue_gantt_pane_autosize(self) -> None:
+        if getattr(self, "_gantt_autosize_pending", False):
+            return
+        self._gantt_autosize_pending = True
+        QTimer.singleShot(40, self._apply_queued_gantt_pane_autosize)
+
+    def _apply_queued_gantt_pane_autosize(self) -> None:
+        self._gantt_autosize_pending = False
+        self._autosize_gantt_pane_to_content()
+
+    def _autosize_gantt_pane_to_content(self) -> None:
+        splitter = getattr(self, "_board_gantt_splitter", None)
+        if splitter is None:
+            return
+
+        total = int(splitter.height())
+        if total <= 0:
+            return
+
+        panel = getattr(self, "_gantt_panel", None)
+        layout = panel.layout() if panel is not None else None
+        if layout is None:
+            return
+
+        content_height = 0
+        if self._gantt_chart_scroll.isVisible():
+            pixmap = self._gantt_chart_label.pixmap()
+            if pixmap is not None and not pixmap.isNull():
+                content_height = int(pixmap.height())
+            else:
+                content_height = int(self._gantt_chart_label.sizeHint().height())
+            content_height += int(self._gantt_chart_scroll.frameWidth()) * 2
+            chart_hbar = self._gantt_chart_scroll.horizontalScrollBar()
+            if chart_hbar.isVisible():
+                content_height += int(chart_hbar.sizeHint().height())
+        else:
+            content_height = int(self._gantt_table.horizontalHeader().height())
+            row_count = int(self._gantt_table.rowCount())
+            for row_index in range(row_count):
+                content_height += int(self._gantt_table.rowHeight(row_index))
+            content_height += int(self._gantt_table.frameWidth()) * 2
+            table_hbar = self._gantt_table.horizontalScrollBar()
+            if table_hbar.isVisible():
+                content_height += int(table_hbar.sizeHint().height())
+
+        margins = layout.contentsMargins()
+        chrome_height = int(margins.top() + margins.bottom())
+        header_count = 0
+        if hasattr(self, "_gantt_title_label") and self._gantt_title_label.isVisible():
+            chrome_height += int(self._gantt_title_label.sizeHint().height())
+            header_count += 1
+        if self._gantt_meta_label.isVisible():
+            chrome_height += int(self._gantt_meta_label.sizeHint().height())
+            header_count += 1
+        if header_count > 0:
+            chrome_height += int(layout.spacing()) * header_count
+
+        handle = int(splitter.handleWidth() or 6)
+        min_board = 120
+        desired = max(0, int(content_height) + chrome_height)
+        max_gantt = max(0, total - min_board - handle)
+        target_gantt = min(desired, max_gantt)
+        target_board = max(min_board, total - target_gantt - handle)
+        sizes = splitter.sizes()
+        if len(sizes) >= 2 and abs(int(sizes[1]) - int(target_gantt)) <= 1:
+            return
+        splitter.setSizes([target_board, target_gantt])
+
+    def _render_gantt_chart_png(
+        self,
+        rows: list[tuple[str, dict[Stage, tuple[float, float]], Stage, Stage, bool, bool]],
+        *,
+        current_week: float,
+        min_week: float,
+        max_week: float,
+    ) -> bytes | None:
+        try:
+            import matplotlib
+
+            matplotlib.use("Agg")
+            from matplotlib import pyplot as plt
+            from matplotlib.lines import Line2D
+            from matplotlib.patches import Patch
+        except Exception:
+            return None
+
+        ordered_rows = list(reversed(rows))
+        if not ordered_rows:
+            return None
+
+        fig_width = 10.5
+        bar_height = 0.42
+        row_step = bar_height
+        fig_height = max(1.3, 0.15 * len(ordered_rows) + 0.55)
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=125)
+
+        colors = {
+            Stage.RELEASE: "#6B7280",   # gray
+            Stage.LASER: "#2563EB",     # blue
+            Stage.BEND: "#D97706",      # amber
+            Stage.WELD: "#DC2626",      # red
+            Stage.COMPLETE: "#16A34A",  # green
+        }
+        stage_marker = {
+            Stage.RELEASE: "R",
+            Stage.LASER: "L",
+            Stage.BEND: "B",
+            Stage.WELD: "W",
+            Stage.COMPLETE: "C",
+        }
+
+        y_positions: list[float] = []
+        labels: list[str] = []
+        for row_index, (row_label, windows, actual_stage, tail_stage, is_released, has_blocker) in enumerate(ordered_rows):
+            y = float(row_index) * row_step
+            y_positions.append(y)
+            labels.append(str(row_label))
+            if not windows:
+                continue
+
+            first_start = min(start for start, _end in windows.values())
+            last_end = max(end for _start, end in windows.values())
+
+            release_left = max(min_week, first_start - 0.35)
+            release_width = max(0.08, first_start - release_left)
+            ax.barh(y, release_width, left=release_left, height=bar_height, color=colors[Stage.RELEASE], alpha=0.8)
+
+            for stage in (Stage.LASER, Stage.BEND, Stage.WELD):
+                bounds = windows.get(stage)
+                if bounds is None:
+                    continue
+                start_week, end_week = bounds
+                width = max(0.08, end_week - start_week)
+                ax.barh(y, width, left=start_week, height=bar_height, color=colors[stage], alpha=0.95)
+
+            complete_right = min(max_week, last_end + 0.35)
+            complete_width = max(0.08, complete_right - last_end)
+            ax.barh(y, complete_width, left=last_end, height=bar_height, color=colors[Stage.COMPLETE], alpha=0.9)
+
+            marker_week: float | None = None
+            stage_bounds = windows.get(actual_stage)
+            if stage_bounds is not None:
+                marker_week = (stage_bounds[0] + stage_bounds[1]) / 2.0
+            elif actual_stage == Stage.RELEASE:
+                marker_week = first_start
+            elif actual_stage == Stage.COMPLETE:
+                marker_week = last_end
+
+            if marker_week is not None:
+                marker_week = max(min_week, min(max_week, marker_week))
+                if has_blocker:
+                    marker_color = "#F59E0B"
+                elif is_released:
+                    marker_color = "#16A34A"
+                else:
+                    marker_color = "#DC2626"
+                ax.scatter([marker_week], [y], s=30, c=marker_color, marker="o", zorder=6)
+
+            if tail_stage < actual_stage and marker_week is not None:
+                tail_week: float | None = None
+                tail_bounds = windows.get(tail_stage)
+                if tail_bounds is not None:
+                    tail_week = (tail_bounds[0] + tail_bounds[1]) / 2.0
+                elif tail_stage == Stage.RELEASE:
+                    tail_week = first_start
+                elif tail_stage == Stage.COMPLETE:
+                    tail_week = last_end
+
+                if tail_week is not None:
+                    tail_week = max(min_week, min(max_week, tail_week))
+                    ax.annotate(
+                        "",
+                        xy=(marker_week, y),
+                        xytext=(tail_week, y),
+                        arrowprops={
+                            "arrowstyle": "->",
+                            "color": "#374151",
+                            "lw": 1.0,
+                            "shrinkA": 0,
+                            "shrinkB": 0,
+                        },
+                        zorder=5,
+                    )
+
+        ax.axvline(float(current_week), color="#DC2626", linestyle="--", linewidth=1.2, zorder=2)
+        ax.set_xlim(float(min_week), float(max_week))
+        ax.set_yticks(y_positions)
+        ax.set_yticklabels(labels, fontsize=6)
+        ax.tick_params(axis="y", pad=0)
+        if y_positions:
+            ax.set_ylim(-bar_height / 2.0, y_positions[-1] + (bar_height / 2.0))
+        tick_count = 5
+        ticks = [
+            float(min_week + ((max_week - min_week) * i / max(1, tick_count - 1)))
+            for i in range(tick_count)
+        ]
+        ax.set_xticks(ticks)
+        ax.set_xticklabels(
+            [self._week_value_to_date_label(value, current_week) for value in ticks],
+            fontsize=8,
+        )
+        ax.grid(axis="x", color="#CBD5E1", linewidth=0.7, alpha=0.7)
+        ax.margins(y=0.0)
+        ax.set_xlabel("Week of", fontsize=8)
+        legend_handles = [
+            Patch(facecolor=colors[Stage.RELEASE], label="Release"),
+            Patch(facecolor=colors[Stage.LASER], label="Laser"),
+            Patch(facecolor=colors[Stage.BEND], label="Bend"),
+            Patch(facecolor=colors[Stage.WELD], label="Weld"),
+            Patch(facecolor=colors[Stage.COMPLETE], label="Complete"),
+            Line2D([0], [0], color="#DC2626", linestyle="--", linewidth=1.2, label="Current week"),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="#111827",
+                markerfacecolor="#111827",
+                markersize=4.5,
+                linewidth=0,
+                label="Actual stage",
+            ),
+        ]
+        ax.legend(
+            handles=legend_handles,
+            loc="upper right",
+            fontsize=7,
+            frameon=True,
+            framealpha=0.95,
+            edgecolor="#CBD5E1",
+        )
+        ax.set_facecolor("#FFFFFF")
+        fig.patch.set_facecolor("#FFFFFF")
+        fig.tight_layout(pad=0.2)
+
+        try:
+            buffer = BytesIO()
+            fig.savefig(buffer, format="png")
+            return buffer.getvalue()
+        finally:
+            plt.close(fig)
+
+    def _update_gantt_panel(self) -> None:
+        if not hasattr(self, "_gantt_table") or self._schedule_insights is None:
+            return
+
+        insights = self._schedule_insights
+        kit_windows_by_name: dict[str, dict[Stage, tuple[float, float]]] = {}
+        for window in insights.kit_operation_windows:
+            kit_key = str(window.kit_name or "").strip().lower()
+            if not kit_key:
+                continue
+            stage = stage_from_id(window.stage_id)
+            kit_windows_by_name.setdefault(kit_key, {})[stage] = (
+                float(window.start_week),
+                float(window.end_week),
+            )
+
+        if not kit_windows_by_name:
+            self._gantt_meta_label.setText("No kit schedule windows configured.")
+            self._set_gantt_message("No gantt data.")
+            return
+
+        rows: list[tuple[str, dict[Stage, tuple[float, float]], Stage, Stage, bool, bool]] = []
+        for truck in self._trucks:
+            if truck.id is None:
+                continue
+            truck_start_week = insights.truck_planned_start_week_by_id.get(int(truck.id))
+            if truck_start_week is None:
+                continue
+            for kit in truck.kits:
+                if not kit.is_active:
+                    continue
+                actual_stage = stage_from_id(kit.front_stage_id)
+                tail_stage = stage_from_id(kit.back_stage_id)
+                if actual_stage == Stage.COMPLETE:
+                    continue
+                kit_key = str(kit.kit_name or "").strip().lower()
+                base_windows = kit_windows_by_name.get(kit_key)
+                if not base_windows:
+                    continue
+                absolute_windows: dict[Stage, tuple[float, float]] = {}
+                for stage, (start_week, end_week) in base_windows.items():
+                    start_value = self._normalize_week_around_current(
+                        truck_start_week + start_week,
+                        insights.current_week,
+                    )
+                    end_value = self._normalize_week_around_current(
+                        truck_start_week + end_week,
+                        insights.current_week,
+                    )
+                    if end_value < start_value:
+                        end_value = start_value
+                    absolute_windows[stage] = (start_value, end_value)
+                truck_token = str(truck.truck_number or "").strip().split()[0]
+                kit_token = str(kit.kit_name or "").strip().split()[0]
+                row_label = f"{truck_token:<10}{kit_token}"
+                is_released = str(kit.release_state or "").strip().lower() == "released"
+                has_blocker = bool(str(kit.blocker or "").strip())
+                rows.append((row_label, absolute_windows, actual_stage, tail_stage, is_released, has_blocker))
+
+        if not rows:
+            self._gantt_meta_label.setText("No planned start anchors available for kits.")
+            self._set_gantt_message("No gantt data.")
+            return
+
+        rows.sort(
+            key=lambda row: (
+                min(start for start, _end in row[1].values()),
+                row[0].lower(),
+            )
+        )
+
+        min_week = min(
+            start
+            for _label, windows, _actual_stage, _tail_stage, _is_released, _has_blocker in rows
+            for start, _end in windows.values()
+        )
+        max_week = max(
+            float(insights.current_week),
+            max(
+                end
+                for _label, windows, _actual_stage, _tail_stage, _is_released, _has_blocker in rows
+                for _start, end in windows.values()
+            ),
+        )
+        if max_week <= min_week:
+            max_week = min_week + 1.0
+
+        chart_width = 30
+        now_idx = self._week_to_chart_index(float(insights.current_week), min_week, max_week, chart_width)
+        min_label = self._week_value_to_date_label(min_week, insights.current_week)
+        max_label = self._week_value_to_date_label(max_week, insights.current_week)
+        current_label = self._week_value_to_date_label(insights.current_week, insights.current_week)
+        self._gantt_meta_label.setText(
+            f"Current: Week of {current_label}"
+            f" | Range: Week of {min_label} to Week of {max_label}"
+        )
+
+        png_data = self._render_gantt_chart_png(
+            rows=rows,
+            current_week=float(insights.current_week),
+            min_week=float(min_week),
+            max_week=float(max_week),
+        )
+        if png_data:
+            pixmap = QPixmap()
+            if pixmap.loadFromData(png_data, "PNG"):
+                self._gantt_chart_label.setPixmap(pixmap)
+                self._gantt_chart_label.resize(pixmap.size())
+                self._gantt_chart_label.setMinimumSize(pixmap.size())
+                self._gantt_chart_scroll.setVisible(True)
+                self._gantt_table.setVisible(False)
+                self._queue_gantt_pane_autosize()
+                return
+        self._gantt_chart_label.clear()
+        self._gantt_chart_scroll.setVisible(False)
+        self._gantt_table.setVisible(True)
+
+        scheduled_fill_map: list[tuple[Stage, str]] = [
+            (Stage.LASER, "L"),
+            (Stage.BEND, "B"),
+            (Stage.WELD, "W"),
+        ]
+        actual_marker_map: dict[Stage, str] = {
+            Stage.RELEASE: "R",
+            Stage.LASER: "L",
+            Stage.BEND: "B",
+            Stage.WELD: "W",
+            Stage.COMPLETE: "C",
+        }
+
+        self._gantt_table.setRowCount(len(rows))
+        for row_index, (row_label, windows, actual_stage, _tail_stage, _is_released, _has_blocker) in enumerate(rows):
+            scheduled = ["."] * chart_width
+            actual = ["."] * chart_width
+
+            first_start = min(start for start, _end in windows.values())
+            last_end = max(end for _start, end in windows.values())
+            scheduled[self._week_to_chart_index(first_start, min_week, max_week, chart_width)] = "R"
+            scheduled[self._week_to_chart_index(last_end, min_week, max_week, chart_width)] = "C"
+
+            for stage, char in scheduled_fill_map:
+                bounds = windows.get(stage)
+                if bounds is None:
+                    continue
+                start_week, end_week = bounds
+                start_idx = self._week_to_chart_index(start_week, min_week, max_week, chart_width)
+                end_idx = self._week_to_chart_index(end_week, min_week, max_week, chart_width)
+                if end_idx < start_idx:
+                    end_idx = start_idx
+                for idx in range(start_idx, end_idx + 1):
+                    scheduled[idx] = char
+
+            marker = actual_marker_map.get(actual_stage)
+            marker_week: float | None = None
+            stage_bounds = windows.get(actual_stage)
+            if stage_bounds is not None:
+                marker_week = (stage_bounds[0] + stage_bounds[1]) / 2.0
+            elif actual_stage == Stage.RELEASE:
+                marker_week = first_start
+            elif actual_stage == Stage.COMPLETE:
+                marker_week = last_end
+            if marker_week is not None and marker:
+                actual[self._week_to_chart_index(marker_week, min_week, max_week, chart_width)] = marker
+
+            if scheduled[now_idx] == ".":
+                scheduled[now_idx] = "|"
+            if actual[now_idx] == ".":
+                actual[now_idx] = "|"
+
+            truck_item = QTableWidgetItem(row_label)
+            scheduled_item = QTableWidgetItem("".join(scheduled))
+            actual_item = QTableWidgetItem("".join(actual))
+            truck_item.setFlags(truck_item.flags() & ~Qt.ItemIsEditable)
+            scheduled_item.setFlags(scheduled_item.flags() & ~Qt.ItemIsEditable)
+            actual_item.setFlags(actual_item.flags() & ~Qt.ItemIsEditable)
+            self._gantt_table.setItem(row_index, 0, truck_item)
+            self._gantt_table.setItem(row_index, 1, scheduled_item)
+            self._gantt_table.setItem(row_index, 2, actual_item)
+        self._queue_gantt_pane_autosize()
 
     def _create_tile(self, title: str) -> dict[str, QWidget]:
         frame = QFrame()
@@ -1468,7 +2035,7 @@ class MainWindow(QMainWindow):
             max_trucks=20,
         )
 
-        output_path = Path(__file__).resolve().parent / "_runtime" / "boss_lens_teams_card.json"
+        output_path = Path(__file__).resolve().parent / "_runtime" / "teams_dashboard_card.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -1479,6 +2046,62 @@ class MainWindow(QMainWindow):
                 self,
                 "Published",
                 f"Dashboard snapshot published to Teams.\nHTTP status: {status}\nPayload: {output_path}",
+            )
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace").strip()
+            body = f"\n\n{detail}" if detail else ""
+            QMessageBox.critical(
+                self,
+                "Publish Failed",
+                f"Webhook HTTP error {exc.code}: {exc.reason}{body}",
+            )
+        except urllib.error.URLError as exc:
+            QMessageBox.critical(
+                self,
+                "Publish Failed",
+                f"Webhook URL error: {exc.reason}",
+            )
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "Publish Failed",
+                f"Unexpected error while publishing: {exc}",
+            )
+
+    def _publish_gantt_only_to_teams(self) -> None:
+        webhook_url = self._current_teams_webhook_url()
+        if not webhook_url:
+            QMessageBox.warning(
+                self,
+                "Webhook URL Required",
+                "Enter a Teams/Power Automate webhook URL first.",
+            )
+            return
+
+        if self._schedule_insights is None:
+            self.refresh_view()
+            if self._schedule_insights is None:
+                QMessageBox.warning(self, "No Data", "No gantt data is available to publish.")
+                return
+
+        payload = build_teams_gantt_only_webhook_payload(
+            trucks=self._trucks,
+            schedule_insights=self._schedule_insights,
+            max_trucks=30,
+            mention_name="cevenson",
+        )
+
+        output_path = Path(__file__).resolve().parent / "_runtime" / "teams_gantt_only_card.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+        try:
+            status = self._post_json_webhook(webhook_url, payload)
+            self.statusBar().showMessage(f"Published gantt card to Teams ({status}).", 4000)
+            QMessageBox.information(
+                self,
+                "Published",
+                f"Gantt-only card published to Teams.\nHTTP status: {status}\nPayload: {output_path}",
             )
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace").strip()
@@ -1583,7 +2206,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        payload_path = Path(__file__).resolve().parent / "_runtime" / "boss_lens_teams_card.json"
+        payload_path = Path(__file__).resolve().parent / "_runtime" / "teams_dashboard_card.json"
         if not payload_path.exists():
             QMessageBox.warning(
                 self,
@@ -1662,7 +2285,11 @@ class MainWindow(QMainWindow):
             )
 
     def _current_teams_webhook_url(self) -> str:
-        return str(self._teams_webhook_input.text() if hasattr(self, "_teams_webhook_input") else "").strip()
+        if hasattr(self, "_teams_webhook_input"):
+            value = str(self._teams_webhook_input.text() or "").strip()
+            if value:
+                return value
+        return str(DEFAULT_TEAMS_WEBHOOK_URL).strip()
 
     @staticmethod
     def _post_json_webhook(webhook_url: str, payload: dict[str, object]) -> int:
@@ -1675,6 +2302,8 @@ class MainWindow(QMainWindow):
         )
         with urllib.request.urlopen(request, timeout=20) as response:
             return int(getattr(response, "status", response.getcode()))
+
+
 
 
 

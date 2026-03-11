@@ -54,7 +54,6 @@ if "%DEV_HOT_RELOAD%"=="1" (
     echo.
     echo Hot reload launcher exited with code %EXITCODE%.
     echo See %LOG% for startup details.
-    pause
   )
   endlocal & exit /b %EXITCODE%
 )
@@ -72,7 +71,6 @@ if "%HAD_ERROR%"=="1" (
   echo Launch failed. Log:
   type "%LOG%"
   echo.
-  pause
 )
 
 endlocal

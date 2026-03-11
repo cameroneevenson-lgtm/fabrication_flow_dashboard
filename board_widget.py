@@ -192,7 +192,7 @@ class KitCard(QFrame):
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(2)
 
-        title = kit.kit_name + (" (BODY)" if kit.is_main_kit else "")
+        title = kit.kit_name
         title_label = QLabel(title)
         title_label.setWordWrap(True)
         title_label.setStyleSheet(f"font-weight: 700; color: {title_color};")
@@ -566,6 +566,10 @@ class TruckRowWidget(QFrame):
 
         window = self._resolve_stage_window(kit, stage_id)
         if window is None:
+            if kit.id is not None:
+                hold_weeks = self._hold_weeks_by_id.get(kit.id)
+                if hold_weeks is not None and hold_weeks > 0:
+                    return "late"
             return "unplanned"
 
         start_week, end_week = window

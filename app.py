@@ -51,6 +51,7 @@ def main() -> int:
     )
     window.show()
     _place_window_on_second_screen(app, window)
+    window.showFullScreen()
 
     return app.exec()
 

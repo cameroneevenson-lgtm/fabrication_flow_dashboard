@@ -64,13 +64,13 @@ The app includes a `Publish to Teams` button for an operations snapshot.
 - The webhook URL is pre-filled with the project default.
 - Click `Test Auth` to send a minimal card and validate authorization first.
 - Click `Publish to Teams`.
-- Click `Publish My Version` to post `_runtime\boss_lens_teams_card.json` as-is (for custom edits).
-- Payload is also written to `_runtime\boss_lens_teams_card.json`.
+- Click `Publish My Version` to post `_runtime\teams_dashboard_card.json` as-is (for custom edits).
+- Payload is also written to `_runtime\teams_dashboard_card.json`.
 
 Generate the webhook JSON payload:
 
 ```powershell
-.\.venv\Scripts\python.exe export_boss_lens_teams_card.py --output _runtime\boss_lens_teams_card.json
+.\.venv\Scripts\python.exe export_boss_lens_teams_card.py --output _runtime\teams_dashboard_card.json
 ```
 
 Generate and post directly to a webhook:
@@ -78,3 +78,4 @@ Generate and post directly to a webhook:
 ```powershell
 .\.venv\Scripts\python.exe export_boss_lens_teams_card.py --webhook-url "<YOUR_WEBHOOK_URL>"
 ```
+
