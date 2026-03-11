@@ -87,7 +87,7 @@ def build_boss_lens_adaptive_card(
     body: list[dict[str, Any]] = [
         {
             "type": "TextBlock",
-            "text": "Fabrication Flow Dashboard - Boss Lens",
+            "text": "Fabrication Flow Dashboard - Management Summary",
             "size": "Large",
             "weight": "Bolder",
             "wrap": True,
@@ -214,4 +214,3 @@ def build_teams_webhook_payload(
             }
         ],
     }
-

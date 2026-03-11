@@ -557,7 +557,7 @@ class MainWindow(QMainWindow):
 
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_operations_tab(), "Operations")
-        self._tabs.addTab(self._build_boss_lens_tab(), "Boss Lens")
+        self._tabs.addTab(self._build_boss_lens_tab(), "Management Summary")
         root_layout.addWidget(self._tabs, 1)
 
         self.refresh_view()
@@ -1450,7 +1450,7 @@ class MainWindow(QMainWindow):
         if self._schedule_insights is None:
             self.refresh_view()
             if self._schedule_insights is None:
-                QMessageBox.warning(self, "No Data", "No Boss Lens data is available to publish.")
+                QMessageBox.warning(self, "No Data", "No management summary data is available to publish.")
                 return
 
         dashboard_metrics = compute_dashboard_metrics(
@@ -1470,11 +1470,11 @@ class MainWindow(QMainWindow):
 
         try:
             status = self._post_json_webhook(webhook_url, payload)
-            self.statusBar().showMessage(f"Published Boss Lens to Teams ({status}).", 4000)
+            self.statusBar().showMessage(f"Published Management Summary to Teams ({status}).", 4000)
             QMessageBox.information(
                 self,
                 "Published",
-                f"Boss Lens published to Teams.\nHTTP status: {status}\nPayload: {output_path}",
+                f"Management summary published to Teams.\nHTTP status: {status}\nPayload: {output_path}",
             )
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace").strip()
@@ -1520,7 +1520,7 @@ class MainWindow(QMainWindow):
                         "body": [
                             {
                                 "type": "TextBlock",
-                                "text": "Boss Lens Teams Auth Test",
+                                "text": "Management Summary Teams Auth Test",
                                 "weight": "Bolder",
                                 "wrap": True,
                             },

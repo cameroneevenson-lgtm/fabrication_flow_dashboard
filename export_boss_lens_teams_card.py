@@ -43,7 +43,7 @@ def _post_payload(webhook_url: str, payload: dict[str, object]) -> tuple[int, st
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Export Boss Lens summary as a Microsoft Teams Adaptive Card webhook JSON payload."
+        description="Export Management Summary as a Microsoft Teams Adaptive Card webhook JSON payload."
     )
     parser.add_argument(
         "--output",
