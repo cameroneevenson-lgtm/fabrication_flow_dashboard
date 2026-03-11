@@ -174,50 +174,6 @@ def _warn_and_ask_restart(exit_code: int) -> bool:
         return False
 
 
-def _warn_and_ask_hot_relaunch(changed_count: int, timeout_sec: float) -> bool:
-    try:
-        title = "Fabrication Flow Dashboard - Hot Reload Decision"
-        msg = (
-            f"{int(max(0, changed_count))} file(s) changed.\n\n"
-            "No in-app decision was received.\n"
-            "Press Retry to restart now, or Cancel to keep this session.\n\n"
-            f"Auto-restart in {int(max(1.0, timeout_sec))} seconds."
-        )
-
-        MB_RETRYCANCEL = 0x00000005
-        MB_ICONWARNING = 0x00000030
-        MB_TOPMOST = 0x00040000
-        IDRETRY = 4
-        IDTIMEOUT = 32000
-
-        timed_fn = getattr(ctypes.windll.user32, "MessageBoxTimeoutW", None)
-        if timed_fn is not None:
-            result = timed_fn(
-                0,
-                msg,
-                title,
-                MB_RETRYCANCEL | MB_ICONWARNING | MB_TOPMOST,
-                0,
-                int(max(1.0, timeout_sec) * 1000),
-            )
-            if int(result) == IDRETRY:
-                return True
-            if int(result) in (0, 2):
-                return False
-            if int(result) == IDTIMEOUT:
-                return True
-
-        result = ctypes.windll.user32.MessageBoxW(
-            0,
-            msg,
-            title,
-            MB_RETRYCANCEL | MB_ICONWARNING | MB_TOPMOST,
-        )
-        return int(result) == IDRETRY
-    except Exception:
-        return True
-
-
 def _acquire_single_instance_lock(root: str):
     try:
         key = hashlib.sha1(os.path.normpath(root).lower().encode("utf-8")).hexdigest()
