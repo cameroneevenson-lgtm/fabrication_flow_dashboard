@@ -282,14 +282,14 @@ def compute_boss_lens_metrics(
             key="bend_buffer",
             label="Bend Buffer Health",
             value=bend_health,
-            detail=f"{metrics.bend_buffer.kit_count} kit(s) in laser/bend.",
+            detail="3+ released kits in laser/bend is healthy.",
             tone=_tone_for_buffer(metrics.bend_buffer.level),
         ),
         BossTile(
             key="weld_feed",
             label="Weld Feed Health",
             value=weld_health,
-            detail=f"Score {metrics.weld_feed.score:.1f}.",
+            detail="Flow readiness from bend into weld.",
             tone=_tone_for_weld(metrics.weld_feed.level),
         ),
         BossTile(
@@ -422,7 +422,7 @@ def _tone_for_count(value: int) -> str:
 def _tone_for_buffer(level: str) -> str:
     if level == "healthy":
         return "ok"
-    if level == "watch":
+    if level == "low":
         return "caution"
     return "problem"
 
@@ -459,28 +459,39 @@ def _compute_next_main_kit_risk(trucks: list[Truck]) -> NextMainKitRisk:
 
 
 def _compute_bend_buffer(trucks: list[Truck]) -> BendBufferHealth:
-    count = 0
-    has_body_in_buffer = False
+    front_buffer_count = 0
+    has_body_tail_in_buffer = False
+
     for truck in trucks:
         for kit in truck.kits:
             if not kit.is_active:
                 continue
             if kit.release_state == "not_released":
                 continue
+
+            is_body = bool(kit.is_main_kit or kit.kit_name.strip().lower() == "body")
             front_stage = stage_from_id(kit.front_stage_id)
             if front_stage in {Stage.LASER, Stage.BEND}:
-                count += 1
-                if kit.is_main_kit or kit.kit_name.strip().lower() == "body":
-                    has_body_in_buffer = True
+                front_buffer_count += 1
 
-    if count == 0:
-        level = "empty"
-    elif count <= 2 and not has_body_in_buffer:
-        level = "low"
-    elif count <= 2:
-        level = "watch"
-    else:
+            if is_body:
+                back_stage = stage_from_id(kit.back_stage_id)
+                if back_stage in {Stage.LASER, Stage.BEND}:
+                    has_body_tail_in_buffer = True
+
+    if front_buffer_count >= 3:
+        count = front_buffer_count
         level = "healthy"
+    elif front_buffer_count > 0:
+        count = front_buffer_count
+        level = "low"
+    elif has_body_tail_in_buffer:
+        # Prevent a hard "dry" signal when the body tail is still feeding laser/bend.
+        count = 1
+        level = "low"
+    else:
+        count = 0
+        level = "dry"
 
     return BendBufferHealth(kit_count=count, level=level)
 
@@ -541,17 +552,17 @@ def _build_attention_items(
             AttentionItem(
                 priority=90,
                 title="Weld feed low",
-                detail=f"Estimated weld feed score is {weld_feed.score}.",
+                detail="Insufficient active kits are feeding weld from bend.",
             )
         )
 
     laser_label = stage_label(Stage.LASER).lower()
     bend_label = stage_label(Stage.BEND).lower()
-    if bend_buffer.level == "empty":
+    if bend_buffer.level == "dry":
         items.append(
             AttentionItem(
                 priority=85,
-                title="Bend buffer empty",
+                title="Bend buffer dry",
                 detail=f"No released kits are in {laser_label}/{bend_label}.",
             )
         )
@@ -560,7 +571,7 @@ def _build_attention_items(
             AttentionItem(
                 priority=80,
                 title="Bend buffer low",
-                detail=f"Only {bend_buffer.kit_count} kit(s) are approaching {bend_label}.",
+                detail=f"Less than 3 released kit(s) are in {laser_label}/{bend_label}.",
             )
         )
 

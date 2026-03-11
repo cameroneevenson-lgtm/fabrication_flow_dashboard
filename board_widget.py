@@ -153,30 +153,46 @@ class KitCard(QFrame):
         stage_window: tuple[float, float] | None = None,
         calendar_year: int | None = None,
         week_bucket: str | None = None,
+        dark_mode: bool = False,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self._kit = kit
         self._press_pos: QPoint | None = None
         self._drag_started = False
+        self._dark_mode = bool(dark_mode)
         self.setCursor(Qt.OpenHandCursor)
         self.setAcceptDrops(True)
 
         front_stage = stage_from_id(kit.front_stage_id)
         back_stage = stage_from_id(kit.back_stage_id)
         is_complete = front_stage == Stage.COMPLETE
-        if is_complete:
-            border_color = "#D1D5DB"
-            border_width = 1
-            background_color = "#F8FAFC"
-            title_color = "#64748B"
-            meta_color = "#94A3B8"
+        if self._dark_mode:
+            if is_complete:
+                border_color = "#3A516A"
+                border_width = 1
+                background_color = "rgba(12, 25, 39, 225)"
+                title_color = "#8FA9C0"
+                meta_color = "#7392AA"
+            else:
+                border_color = accent_color if kit.is_main_kit else "#4C6780"
+                border_width = 2 if kit.is_main_kit else 1
+                background_color = "rgba(7, 18, 30, 235)"
+                title_color = "#D7EEFF"
+                meta_color = "#9AB8CD"
         else:
-            border_color = accent_color if kit.is_main_kit else "#C6CDD4"
-            border_width = 2 if kit.is_main_kit else 1
-            background_color = "#FFFFFF"
-            title_color = "#1F2933"
-            meta_color = "#4F5D6B"
+            if is_complete:
+                border_color = "#D1D5DB"
+                border_width = 1
+                background_color = "#F8FAFC"
+                title_color = "#64748B"
+                meta_color = "#94A3B8"
+            else:
+                border_color = accent_color if kit.is_main_kit else "#C6CDD4"
+                border_width = 2 if kit.is_main_kit else 1
+                background_color = "#FFFFFF"
+                title_color = "#1F2933"
+                meta_color = "#4F5D6B"
 
         self.setStyleSheet(
             f"""
@@ -209,27 +225,46 @@ class KitCard(QFrame):
             tail_label.setCursor(Qt.PointingHandCursor)
             tail_label.setAlignment(Qt.AlignCenter)
             tail_label.setWordWrap(True)
-            tail_label.setStyleSheet(
-                """
-                QLabel {
-                    font-size: 11px;
-                    font-weight: 800;
-                    letter-spacing: 0.5px;
-                    color: #7C2D12;
-                    background-color: #FEE2E2;
-                    border: 1px solid #FB7185;
-                    border-radius: 4px;
-                    padding: 2px 6px;
-                }
-                """
-            )
+            if self._dark_mode:
+                tail_label.setStyleSheet(
+                    """
+                    QLabel {
+                        font-size: 11px;
+                        font-weight: 800;
+                        letter-spacing: 0.5px;
+                        color: #FFB3A3;
+                        background-color: rgba(94, 24, 35, 210);
+                        border: 1px solid #FF7D98;
+                        border-radius: 4px;
+                        padding: 2px 6px;
+                    }
+                    """
+                )
+            else:
+                tail_label.setStyleSheet(
+                    """
+                    QLabel {
+                        font-size: 11px;
+                        font-weight: 800;
+                        letter-spacing: 0.5px;
+                        color: #7C2D12;
+                        background-color: #FEE2E2;
+                        border: 1px solid #FB7185;
+                        border-radius: 4px;
+                        padding: 2px 6px;
+                    }
+                    """
+                )
             layout.addWidget(tail_label)
             if kit.id is not None:
                 tail_label.clicked.connect(self._on_tail_forward_clicked)
 
         if release_hold_weeks is not None and not is_complete:
             hold_label = QLabel(f"ENG HOLD: {release_hold_weeks:.1f} week(s) past planned start")
-            hold_label.setStyleSheet("font-size: 10px; font-weight: 700; color: #B91C1C;")
+            if self._dark_mode:
+                hold_label.setStyleSheet("font-size: 10px; font-weight: 700; color: #FF8B8B;")
+            else:
+                hold_label.setStyleSheet("font-size: 10px; font-weight: 700; color: #B91C1C;")
             hold_label.setWordWrap(True)
             layout.addWidget(hold_label)
 
@@ -242,22 +277,34 @@ class KitCard(QFrame):
             week_label = QLabel(week_text)
             week_label.setWordWrap(True)
             if week_bucket == "late":
-                week_label.setStyleSheet("font-size: 10px; font-weight: 700; color: #B91C1C;")
+                if self._dark_mode:
+                    week_label.setStyleSheet("font-size: 10px; font-weight: 700; color: #FF8B8B;")
+                else:
+                    week_label.setStyleSheet("font-size: 10px; font-weight: 700; color: #B91C1C;")
             else:
-                week_label.setStyleSheet("font-size: 10px; color: #334155;")
+                if self._dark_mode:
+                    week_label.setStyleSheet("font-size: 10px; color: #9DB9CF;")
+                else:
+                    week_label.setStyleSheet("font-size: 10px; color: #334155;")
             layout.addWidget(week_label)
 
         pdf_link_count = _pdf_link_count(kit.pdf_links)
         if pdf_link_count > 0:
             pdf_label = QLabel(f"PDF Link(s): {pdf_link_count}")
             pdf_label.setWordWrap(True)
-            pdf_label.setStyleSheet("font-size: 10px; color: #1D4ED8;")
+            if self._dark_mode:
+                pdf_label.setStyleSheet("font-size: 10px; color: #6CC3FF;")
+            else:
+                pdf_label.setStyleSheet("font-size: 10px; color: #1D4ED8;")
             layout.addWidget(pdf_label)
 
         if kit.blocker.strip():
             blocker_label = QLabel(f"Blocker: {kit.blocker.strip()}")
             blocker_label.setWordWrap(True)
-            blocker_label.setStyleSheet("font-size: 10px; color: #A53E2C;")
+            if self._dark_mode:
+                blocker_label.setStyleSheet("font-size: 10px; color: #FFB099;")
+            else:
+                blocker_label.setStyleSheet("font-size: 10px; color: #A53E2C;")
             layout.addWidget(blocker_label)
 
     def _on_tail_forward_clicked(self) -> None:
@@ -347,21 +394,37 @@ class KitCard(QFrame):
 class StageDropZone(QFrame):
     kit_dropped = Signal(int, int)
 
-    def __init__(self, stage_id: int, truck_id: int, parent: QWidget | None = None):
+    def __init__(
+        self,
+        stage_id: int,
+        truck_id: int,
+        *,
+        dark_mode: bool = False,
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self._stage_id = int(stage_from_id(stage_id))
         self._truck_id = truck_id
+        self._dark_mode = bool(dark_mode)
         self.setFixedWidth(STAGE_COL_WIDTH)
         self.setAcceptDrops(True)
         self._set_hover(False)
 
     def _set_hover(self, is_hover: bool) -> None:
-        if is_hover:
-            border = "#1D4ED8"
-            background = "#E8F0FE"
+        if self._dark_mode:
+            if is_hover:
+                border = "#65D9FF"
+                background = "rgba(14, 48, 77, 220)"
+            else:
+                border = "#5E7D97"
+                background = "rgba(10, 22, 35, 210)"
         else:
-            border = "#CBD5E1"
-            background = "#F3F5F7"
+            if is_hover:
+                border = "#1D4ED8"
+                background = "#E8F0FE"
+            else:
+                border = "#CBD5E1"
+                background = "#F3F5F7"
 
         self.setStyleSheet(
             f"""
@@ -455,6 +518,7 @@ class TruckRowWidget(QFrame):
         week_lens_enabled: bool = False,
         current_week: float | None = None,
         kit_stage_windows_by_truck: dict[tuple[int, str, int], tuple[float, float]] | None = None,
+        dark_mode: bool = False,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -464,12 +528,15 @@ class TruckRowWidget(QFrame):
         self._current_week = current_week
         self._kit_stage_windows_by_truck = kit_stage_windows_by_truck or {}
         self._truck_id = int(truck.id or -1)
+        self._dark_mode = bool(dark_mode)
         self._calendar_year = _calendar_year_from_date(truck.planned_start_date)
+        row_bg = "rgba(8, 23, 37, 195)" if self._dark_mode else "#F8FAFC"
+        row_border = "#4D6A84" if self._dark_mode else "#D5DEE7"
         self.setStyleSheet(
             f"""
             QFrame {{
-                background-color: #F8FAFC;
-                border: 1px solid #D5DEE7;
+                background-color: {row_bg};
+                border: 1px solid {row_border};
                 border-left: 6px solid {accent_color};
                 border-radius: 8px;
             }}
@@ -489,7 +556,10 @@ class TruckRowWidget(QFrame):
         truck_label = QLabel(truck.truck_number)
         truck_label.setWordWrap(True)
         truck_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        truck_label.setStyleSheet("font-weight: 700; color: #0F172A;")
+        if self._dark_mode:
+            truck_label.setStyleSheet("font-weight: 700; color: #D9EEFF;")
+        else:
+            truck_label.setStyleSheet("font-weight: 700; color: #0F172A;")
         truck_info_layout.addWidget(truck_label)
 
         if planned_start_week is not None:
@@ -498,21 +568,30 @@ class TruckRowWidget(QFrame):
             )
             schedule_label.setWordWrap(True)
             schedule_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            schedule_label.setStyleSheet("font-size: 10px; color: #475569;")
+            if self._dark_mode:
+                schedule_label.setStyleSheet("font-size: 10px; color: #96B5CD;")
+            else:
+                schedule_label.setStyleSheet("font-size: 10px; color: #475569;")
             truck_info_layout.addWidget(schedule_label)
 
         if str(truck.client).strip():
             client_label = QLabel(f"Client: {truck.client.strip()}")
             client_label.setWordWrap(True)
             client_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            client_label.setStyleSheet("font-size: 10px; color: #475569;")
+            if self._dark_mode:
+                client_label.setStyleSheet("font-size: 10px; color: #96B5CD;")
+            else:
+                client_label.setStyleSheet("font-size: 10px; color: #475569;")
             truck_info_layout.addWidget(client_label)
 
         if str(truck.planned_start_date).strip():
             date_label = QLabel(f"Day Zero: {truck.planned_start_date.strip()}")
             date_label.setWordWrap(True)
             date_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            date_label.setStyleSheet("font-size: 10px; color: #475569;")
+            if self._dark_mode:
+                date_label.setStyleSheet("font-size: 10px; color: #96B5CD;")
+            else:
+                date_label.setStyleSheet("font-size: 10px; color: #475569;")
             truck_info_layout.addWidget(date_label)
 
         truck_info_layout.addStretch(1)
@@ -521,7 +600,11 @@ class TruckRowWidget(QFrame):
         active_kits = [kit for kit in sorted(truck.kits, key=lambda x: x.kit_order) if kit.is_active]
         for stage in STAGE_SEQUENCE:
             stage_id = int(stage)
-            stage_box = StageDropZone(stage_id=stage_id, truck_id=self._truck_id)
+            stage_box = StageDropZone(
+                stage_id=stage_id,
+                truck_id=self._truck_id,
+                dark_mode=self._dark_mode,
+            )
             stage_box.kit_dropped.connect(self.kit_stage_dropped.emit)
 
             stage_layout = QVBoxLayout(stage_box)
@@ -531,22 +614,36 @@ class TruckRowWidget(QFrame):
             stage_kits = [kit for kit in active_kits if int(stage_from_id(kit.front_stage_id)) == stage_id]
             if not stage_kits:
                 drop_hint = StageForwardFrame(stage_box=stage_box)
-                drop_hint.setStyleSheet(
-                    """
-                    QFrame {
-                        background-color: #EEF2F7;
-                        border: 1px dashed #CBD5E1;
-                        border-radius: 5px;
-                    }
-                    """
-                )
+                if self._dark_mode:
+                    drop_hint.setStyleSheet(
+                        """
+                        QFrame {
+                            background-color: rgba(17, 35, 52, 210);
+                            border: 1px dashed #5E7D97;
+                            border-radius: 5px;
+                        }
+                        """
+                    )
+                else:
+                    drop_hint.setStyleSheet(
+                        """
+                        QFrame {
+                            background-color: #EEF2F7;
+                            border: 1px dashed #CBD5E1;
+                            border-radius: 5px;
+                        }
+                        """
+                    )
                 drop_hint_layout = QVBoxLayout(drop_hint)
                 drop_hint_layout.setContentsMargins(2, 2, 2, 2)
                 drop_hint_layout.setSpacing(1)
                 hint_label = QLabel("Drop Here")
                 hint_label.setAlignment(Qt.AlignCenter)
                 hint_label.setWordWrap(True)
-                hint_label.setStyleSheet("font-size: 9px; color: #64748B;")
+                if self._dark_mode:
+                    hint_label.setStyleSheet("font-size: 9px; color: #8EA9BE;")
+                else:
+                    hint_label.setStyleSheet("font-size: 9px; color: #64748B;")
                 drop_hint_layout.addWidget(hint_label)
                 stage_layout.addWidget(drop_hint)
             elif self._week_lens_enabled and stage != Stage.COMPLETE:
@@ -611,6 +708,7 @@ class TruckRowWidget(QFrame):
             stage_window=self._resolve_stage_window(kit, stage_id),
             calendar_year=self._calendar_year,
             week_bucket=week_bucket,
+            dark_mode=self._dark_mode,
         )
         card.clicked.connect(self.kit_selected.emit)
         card.tail_forward_requested.connect(self.kit_tail_forward_requested.emit)
@@ -638,15 +736,26 @@ class TruckRowWidget(QFrame):
                 continue
 
             lane = StageForwardFrame(stage_box=stage_box)
-            lane.setStyleSheet(
-                """
-                QFrame {
-                    background-color: #EEF2F7;
-                    border: 1px solid #D1DAE5;
-                    border-radius: 5px;
-                }
-                """
-            )
+            if self._dark_mode:
+                lane.setStyleSheet(
+                    """
+                    QFrame {
+                        background-color: rgba(17, 35, 52, 210);
+                        border: 1px solid #54718A;
+                        border-radius: 5px;
+                    }
+                    """
+                )
+            else:
+                lane.setStyleSheet(
+                    """
+                    QFrame {
+                        background-color: #EEF2F7;
+                        border: 1px solid #D1DAE5;
+                        border-radius: 5px;
+                    }
+                    """
+                )
             lane_layout = QVBoxLayout(lane)
             lane_layout.setContentsMargins(3, 3, 3, 3)
             lane_layout.setSpacing(3)
@@ -654,9 +763,15 @@ class TruckRowWidget(QFrame):
             title_label = QLabel(f"{WEEK_LENS_LANE_LABELS[bucket_name]} ({len(bucket_kits)})")
             title_label.setWordWrap(True)
             if bucket_name == "late":
-                title_label.setStyleSheet("font-size: 9px; font-weight: 700; color: #B91C1C;")
+                if self._dark_mode:
+                    title_label.setStyleSheet("font-size: 9px; font-weight: 700; color: #FF8B8B;")
+                else:
+                    title_label.setStyleSheet("font-size: 9px; font-weight: 700; color: #B91C1C;")
             else:
-                title_label.setStyleSheet("font-size: 9px; font-weight: 700; color: #334155;")
+                if self._dark_mode:
+                    title_label.setStyleSheet("font-size: 9px; font-weight: 700; color: #A7C5DA;")
+                else:
+                    title_label.setStyleSheet("font-size: 9px; font-weight: 700; color: #334155;")
             lane_layout.addWidget(title_label)
 
             for kit in bucket_kits:

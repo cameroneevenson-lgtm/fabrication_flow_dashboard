@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QProgressBar,
     QScrollArea,
     QSplitter,
     QTableWidget,
@@ -61,6 +62,7 @@ DEFAULT_TEAMS_WEBHOOK_URL = (
     "powerautomate/automations/direct/workflows/98b3a4e7ea8c439090e2d40232163817/triggers/manual/"
     "paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=ggEqWDyQT6T3GEouJCsp0jiZPF8mgQI5j5bl4T8T4CQ"
 )
+TEAMS_ADAPTIVE_CARD_MAX_PAYLOAD_BYTES = 28_000
 
 
 def _fmt_week(value: float) -> str:
@@ -115,6 +117,7 @@ class KitEditDialog(QDialog):
         self.setModal(True)
         self.resize(520, 420)
         self._truck_number = str(truck_number or "").strip()
+        self._kit_name = str(kit.kit_name or "").strip()
 
         self._release_combo = QComboBox()
         self._release_combo.addItems(RELEASE_STATES)
@@ -230,25 +233,105 @@ class KitEditDialog(QDialog):
             path = path.resolve()
         return path
 
+    @staticmethod
+    def _normalized_lookup_text(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+    @classmethod
+    def _find_best_subdir_match(cls, parent: Path, query: str) -> Path | None:
+        if not parent.exists() or not parent.is_dir():
+            return None
+
+        query_norm = cls._normalized_lookup_text(query)
+        if not query_norm:
+            return None
+
+        tokens = [token for token in query_norm.split() if token]
+        if not tokens:
+            return None
+
+        partial_pattern = re.compile(".*".join(re.escape(token) for token in tokens), re.IGNORECASE)
+        best_path: Path | None = None
+        best_score = -1
+
+        try:
+            children = sorted((path for path in parent.iterdir() if path.is_dir()), key=lambda p: p.name.lower())
+        except OSError:
+            return None
+
+        for child in children:
+            name_norm = cls._normalized_lookup_text(child.name)
+            if not name_norm:
+                continue
+
+            score = 0
+            if query_norm in name_norm:
+                score += 100
+            if name_norm in query_norm:
+                score += 20
+            if partial_pattern.search(name_norm):
+                score += 30
+            score += sum(1 for token in tokens if token in name_norm)
+
+            if score > best_score and score > 0:
+                best_score = score
+                best_path = child
+
+        return best_path
+
+    @classmethod
+    def _auto_descend_pdf_dir(cls, base_dir: Path, kit_name: str) -> Path:
+        if not base_dir.exists() or not base_dir.is_dir():
+            return base_dir
+
+        kit_norm = cls._normalized_lookup_text(kit_name)
+        if not kit_norm:
+            return base_dir
+
+        if "body" in kit_norm:
+            body_match = cls._find_best_subdir_match(base_dir, "paint pack")
+            if body_match is not None:
+                return body_match
+
+        if "pumphouse" in kit_norm or ("pump" in kit_norm and "house" in kit_norm):
+            pump_pack_dir = cls._find_best_subdir_match(base_dir, "pump pack")
+            if pump_pack_dir is not None:
+                pump_house_dir = cls._find_best_subdir_match(pump_pack_dir, "pump house")
+                if pump_house_dir is not None:
+                    return pump_house_dir
+                return pump_pack_dir
+            direct_pump_house = cls._find_best_subdir_match(base_dir, "pump house")
+            if direct_pump_house is not None:
+                return direct_pump_house
+
+        generic_match = cls._find_best_subdir_match(base_dir, kit_norm)
+        if generic_match is not None:
+            return generic_match
+        return base_dir
+
     def _default_pdf_lookup_dir(self) -> str:
         root = self.PDF_LOOKUP_ROOT
         if not root.exists():
             return str(Path.cwd())
 
+        base_dir = root
         match = re.search(r"(F\d+)", self._truck_number, re.IGNORECASE)
         truck_code = match.group(1).upper() if match else ""
         if truck_code:
             direct = root / truck_code
             if direct.exists():
-                return str(direct)
-            matches = sorted(path for path in root.glob(f"{truck_code}*") if path.is_dir())
-            if matches:
-                return str(matches[0])
+                base_dir = direct
+            else:
+                matches = sorted(path for path in root.glob(f"{truck_code}*") if path.is_dir())
+                if matches:
+                    base_dir = matches[0]
 
-        fallback_matches = sorted(path for path in root.glob("F*") if path.is_dir())
-        if fallback_matches:
-            return str(fallback_matches[0])
-        return str(root)
+        if base_dir == root:
+            fallback_matches = sorted(path for path in root.glob("F*") if path.is_dir())
+            if fallback_matches:
+                base_dir = fallback_matches[0]
+
+        return str(self._auto_descend_pdf_dir(base_dir, self._kit_name))
 
     def _select_pdf_links(self) -> None:
         existing = self._normalized_pdf_links()
@@ -508,6 +591,7 @@ class MainWindow(QMainWindow):
         self._kit_index: dict[int, tuple[Truck, TruckKit]] = {}
         self._schedule_insights: ScheduleInsights | None = None
         self._week_lens_enabled = True
+        self._minority_report_mode = False
         self._hot_reload_enabled = hot_reload_active
         self._hot_reload_request_id: str = ""
         self._hot_reload_canceled_request_id: str = ""
@@ -522,6 +606,7 @@ class MainWindow(QMainWindow):
         self.resize(1600, 900)
 
         root = QWidget()
+        root.setObjectName("main_root")
         root_layout = QVBoxLayout(root)
         root_layout.setContentsMargins(10, 10, 10, 10)
         root_layout.setSpacing(10)
@@ -565,6 +650,7 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self._build_operations_tab(), 1)
 
         self.refresh_view()
+        self._apply_visual_mode()
 
     def timerEvent(self, event):  # type: ignore[override]
         if self._hot_reload_timer is not None and event.timerId() == self._hot_reload_timer:
@@ -698,6 +784,12 @@ class MainWindow(QMainWindow):
         publish_gantt_button = QPushButton("Publish Gantt to Teams")
         publish_gantt_button.clicked.connect(self._publish_gantt_only_to_teams)
         controls.addWidget(publish_gantt_button)
+        self._minority_report_checkbox = QCheckBox("Dark Mode")
+        self._minority_report_checkbox.setToolTip(
+            "Enable transparent dark-mode chrome. Inspired by Minority Report."
+        )
+        self._minority_report_checkbox.toggled.connect(self._on_minority_report_toggled)
+        controls.addWidget(self._minority_report_checkbox)
         controls.addStretch(1)
 
         self._status_label = QLabel("")
@@ -742,6 +834,175 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(main_splitter, 1)
         return tab
+
+    def _on_minority_report_toggled(self, checked: bool) -> None:
+        self._minority_report_mode = bool(checked)
+        self._apply_visual_mode()
+        if self._schedule_insights is None:
+            return
+        metrics = compute_dashboard_metrics(self._trucks, schedule_insights=self._schedule_insights)
+        self._update_health_strip(metrics)
+        self._update_attention_panel(metrics)
+        self._update_gantt_panel()
+        if hasattr(self, "_schedule_start_label"):
+            self._update_schedule_panel()
+
+    def _apply_visual_mode(self) -> None:
+        dark = bool(self._minority_report_mode)
+
+        if dark:
+            self.setStyleSheet(
+                """
+                QWidget#main_root {
+                    background-color: #040B16;
+                }
+                QPushButton {
+                    color: #D8F5FF;
+                    background-color: rgba(21, 46, 71, 210);
+                    border: 1px solid rgba(124, 217, 255, 140);
+                    border-radius: 6px;
+                    padding: 5px 10px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(30, 74, 109, 220);
+                }
+                QCheckBox {
+                    color: #B8E7FF;
+                    spacing: 6px;
+                }
+                QCheckBox::indicator {
+                    width: 14px;
+                    height: 14px;
+                    border: 1px solid rgba(124, 217, 255, 180);
+                    background: rgba(5, 18, 34, 220);
+                }
+                QCheckBox::indicator:checked {
+                    background: rgba(0, 220, 255, 170);
+                }
+                QLineEdit, QDateEdit, QComboBox, QPlainTextEdit {
+                    color: #D8F5FF;
+                    background-color: rgba(5, 18, 33, 220);
+                    border: 1px solid rgba(122, 214, 255, 110);
+                    border-radius: 6px;
+                }
+                QHeaderView::section {
+                    background-color: rgba(19, 39, 62, 230);
+                    color: #CBEAFF;
+                    border: 1px solid rgba(122, 214, 255, 110);
+                    padding: 4px;
+                }
+                """
+            )
+            panel_bg = "rgba(9, 24, 40, 190)"
+            panel_border = "rgba(122, 214, 255, 120)"
+            title_color = "#9CEBFF"
+            text_color = "#C6D8E6"
+            muted_color = "#88A5BA"
+            list_bg = "rgba(3, 13, 25, 210)"
+            list_border = "rgba(122, 214, 255, 120)"
+            table_bg = "rgba(3, 13, 25, 220)"
+            table_border = "rgba(122, 214, 255, 120)"
+            status_color = "#86B6D3"
+        else:
+            self.setStyleSheet("")
+            panel_bg = "#F8FAFC"
+            panel_border = "#D5DEE7"
+            title_color = "#0F172A"
+            text_color = "#334155"
+            muted_color = "#475569"
+            list_bg = "#FFFFFF"
+            list_border = "#CBD5E1"
+            table_bg = "#FFFFFF"
+            table_border = "#CBD5E1"
+            status_color = "#475569"
+
+        panel_style = (
+            "QFrame {"
+            f" background-color: {panel_bg};"
+            f" border: 1px solid {panel_border};"
+            " border-radius: 8px;"
+            " }"
+        )
+
+        if hasattr(self, "_status_label"):
+            self._status_label.setStyleSheet(f"color: {status_color};")
+
+        if hasattr(self, "_attention_panel"):
+            self._attention_panel.setStyleSheet(panel_style)
+        if hasattr(self, "_attention_title_label"):
+            self._attention_title_label.setStyleSheet(
+                f"font-size: 16px; font-weight: 700; color: {title_color};"
+            )
+        if hasattr(self, "_attention_list"):
+            self._attention_list.setStyleSheet(
+                f"""
+                QListWidget {{
+                    background: {list_bg};
+                    border: 1px solid {list_border};
+                    border-radius: 6px;
+                }}
+                """
+            )
+
+        if hasattr(self, "_gantt_panel"):
+            self._gantt_panel.setStyleSheet(panel_style)
+        if hasattr(self, "_gantt_title_label"):
+            self._gantt_title_label.setStyleSheet(
+                f"font-size: 15px; font-weight: 700; color: {title_color};"
+            )
+        if hasattr(self, "_gantt_meta_label"):
+            self._gantt_meta_label.setStyleSheet(f"font-size: 11px; color: {muted_color};")
+        if hasattr(self, "_gantt_chart_scroll"):
+            self._gantt_chart_scroll.setStyleSheet(
+                f"""
+                QScrollArea {{
+                    background: {list_bg};
+                    border: 1px solid {list_border};
+                    border-radius: 6px;
+                }}
+                """
+            )
+        if hasattr(self, "_gantt_chart_label"):
+            self._gantt_chart_label.setStyleSheet(f"background: {list_bg};")
+        if hasattr(self, "_gantt_table"):
+            self._gantt_table.setStyleSheet(
+                f"""
+                QTableWidget {{
+                    background: {table_bg};
+                    color: {text_color};
+                    border: 1px solid {table_border};
+                    border-radius: 6px;
+                    font-family: Consolas, "Courier New", monospace;
+                    font-size: 11px;
+                }}
+                """
+            )
+
+        if hasattr(self, "_schedule_panel"):
+            self._schedule_panel.setStyleSheet(panel_style)
+        if hasattr(self, "_schedule_title_label"):
+            self._schedule_title_label.setStyleSheet(
+                f"font-size: 16px; font-weight: 700; color: {title_color};"
+            )
+        if hasattr(self, "_schedule_start_label"):
+            self._schedule_start_label.setStyleSheet(f"font-size: 12px; color: {text_color};")
+        if hasattr(self, "_current_week_label"):
+            self._current_week_label.setStyleSheet(f"font-size: 12px; color: {text_color};")
+        if hasattr(self, "_truck_lag_label"):
+            self._truck_lag_label.setStyleSheet(f"font-size: 12px; color: {text_color};")
+        if hasattr(self, "_standards_label"):
+            self._standards_label.setStyleSheet(f"font-size: 11px; color: {muted_color};")
+
+        for tile in getattr(self, "_tile_widgets", {}).values():
+            frame = tile.get("frame")
+            title_label = tile.get("title")
+            detail_label = tile.get("detail")
+            if frame is not None:
+                frame.setStyleSheet(panel_style)
+            if title_label is not None:
+                title_label.setStyleSheet(f"font-size: 12px; color: {text_color};")
+            if detail_label is not None:
+                detail_label.setStyleSheet(f"font-size: 11px; color: {muted_color};")
 
     def _build_boss_lens_tab(self) -> QWidget:
         tab = QWidget()
@@ -835,34 +1096,17 @@ class MainWindow(QMainWindow):
             }
             """
         )
-        summary_layout = QVBoxLayout(summary_panel)
+        summary_layout = QHBoxLayout(summary_panel)
         summary_layout.setContentsMargins(10, 8, 10, 8)
-        summary_layout.setSpacing(6)
+        summary_layout.setSpacing(8)
 
-        sync_title = QLabel("Schedule Sync")
-        sync_title.setStyleSheet("font-size: 14px; font-weight: 700; color: #0F172A;")
-        self._boss_sync_label = QLabel("-")
-        self._boss_sync_label.setWordWrap(True)
-        self._boss_sync_label.setStyleSheet("font-size: 12px;")
-
-        release_title = QLabel("Release Alignment")
-        release_title.setStyleSheet("font-size: 14px; font-weight: 700; color: #0F172A;")
-        self._boss_release_label = QLabel("-")
-        self._boss_release_label.setWordWrap(True)
-        self._boss_release_label.setStyleSheet("font-size: 12px;")
-
-        flow_title = QLabel("Flow Health")
-        flow_title.setStyleSheet("font-size: 14px; font-weight: 700; color: #0F172A;")
-        self._boss_flow_label = QLabel("-")
-        self._boss_flow_label.setWordWrap(True)
-        self._boss_flow_label.setStyleSheet("font-size: 12px;")
-
-        summary_layout.addWidget(sync_title)
-        summary_layout.addWidget(self._boss_sync_label)
-        summary_layout.addWidget(release_title)
-        summary_layout.addWidget(self._boss_release_label)
-        summary_layout.addWidget(flow_title)
-        summary_layout.addWidget(self._boss_flow_label)
+        self._boss_summary_gauges = {
+            "sync": self._create_pressure_gauge("Schedule Sync"),
+            "release": self._create_pressure_gauge("Release Alignment"),
+            "flow": self._create_pressure_gauge("Flow Health"),
+        }
+        for gauge in self._boss_summary_gauges.values():
+            summary_layout.addWidget(gauge["frame"])
         layout.addWidget(summary_panel)
 
         truck_panel = QFrame()
@@ -1129,6 +1373,7 @@ class MainWindow(QMainWindow):
 
     def _build_schedule_panel(self) -> QWidget:
         panel = QFrame()
+        self._schedule_panel = panel
         panel.setFrameShape(QFrame.StyledPanel)
         panel.setStyleSheet(
             """
@@ -1142,6 +1387,7 @@ class MainWindow(QMainWindow):
 
         layout = QVBoxLayout(panel)
         title = QLabel("Master Schedule Reference")
+        self._schedule_title_label = title
         title.setWordWrap(True)
         title.setStyleSheet("font-size: 16px; font-weight: 700; color: #0F172A;")
         layout.addWidget(title)
@@ -1175,6 +1421,7 @@ class MainWindow(QMainWindow):
 
     def _build_attention_panel(self) -> QWidget:
         panel = QFrame()
+        self._attention_panel = panel
         panel.setFrameShape(QFrame.StyledPanel)
         panel.setStyleSheet(
             """
@@ -1188,6 +1435,7 @@ class MainWindow(QMainWindow):
 
         layout = QVBoxLayout(panel)
         title = QLabel("Attention")
+        self._attention_title_label = title
         title.setWordWrap(True)
         title.setStyleSheet("font-size: 16px; font-weight: 700; color: #0F172A;")
         layout.addWidget(title)
@@ -1288,6 +1536,13 @@ class MainWindow(QMainWindow):
         ratio = (float(week_value) - min_week) / span
         idx = int(round(ratio * float(width - 1)))
         return max(0, min(width - 1, idx))
+
+    @staticmethod
+    def _safe_row_token(value: object, fallback: str) -> str:
+        tokens = str(value or "").strip().split()
+        if tokens:
+            return tokens[0]
+        return fallback
 
     @staticmethod
     def _normalize_week_around_current(week_value: float, current_week: float) -> float:
@@ -1428,18 +1683,9 @@ class MainWindow(QMainWindow):
         fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=125)
 
         colors = {
-            Stage.RELEASE: "#6B7280",   # gray
-            Stage.LASER: "#2563EB",     # blue
-            Stage.BEND: "#D97706",      # amber
-            Stage.WELD: "#DC2626",      # red
-            Stage.COMPLETE: "#16A34A",  # green
-        }
-        stage_marker = {
-            Stage.RELEASE: "R",
-            Stage.LASER: "L",
-            Stage.BEND: "B",
-            Stage.WELD: "W",
-            Stage.COMPLETE: "C",
+            Stage.LASER: "#F97316",     # orange
+            Stage.BEND: "#2563EB",      # blue
+            Stage.WELD: "#7C3AED",      # purple
         }
 
         y_positions: list[float] = []
@@ -1451,13 +1697,6 @@ class MainWindow(QMainWindow):
             if not windows:
                 continue
 
-            first_start = min(start for start, _end in windows.values())
-            last_end = max(end for _start, end in windows.values())
-
-            release_left = max(min_week, first_start - 0.35)
-            release_width = max(0.08, first_start - release_left)
-            ax.barh(y, release_width, left=release_left, height=bar_height, color=colors[Stage.RELEASE], alpha=0.8)
-
             for stage in (Stage.LASER, Stage.BEND, Stage.WELD):
                 bounds = windows.get(stage)
                 if bounds is None:
@@ -1466,27 +1705,23 @@ class MainWindow(QMainWindow):
                 width = max(0.08, end_week - start_week)
                 ax.barh(y, width, left=start_week, height=bar_height, color=colors[stage], alpha=0.95)
 
-            complete_right = min(max_week, last_end + 0.35)
-            complete_width = max(0.08, complete_right - last_end)
-            ax.barh(y, complete_width, left=last_end, height=bar_height, color=colors[Stage.COMPLETE], alpha=0.9)
-
             marker_week: float | None = None
-            stage_bounds = windows.get(actual_stage)
-            if stage_bounds is not None:
-                marker_week = (stage_bounds[0] + stage_bounds[1]) / 2.0
-            elif actual_stage == Stage.RELEASE:
-                marker_week = first_start
-            elif actual_stage == Stage.COMPLETE:
-                marker_week = last_end
+            marker_color = "#16A34A"
+            if not is_released:
+                laser_bounds = windows.get(Stage.LASER)
+                laser_trailing_week = laser_bounds[1] if laser_bounds is not None else float(current_week)
+                is_late_release = float(current_week) > float(laser_trailing_week)
+                marker_week = float(current_week) if is_late_release else float(laser_trailing_week)
+                marker_color = "#DC2626"
+            else:
+                stage_bounds = windows.get(actual_stage)
+                if stage_bounds is not None:
+                    marker_week = (stage_bounds[0] + stage_bounds[1]) / 2.0
+                if has_blocker:
+                    marker_color = "#F59E0B"
 
             if marker_week is not None:
                 marker_week = max(min_week, min(max_week, marker_week))
-                if has_blocker:
-                    marker_color = "#F59E0B"
-                elif is_released:
-                    marker_color = "#16A34A"
-                else:
-                    marker_color = "#DC2626"
                 ax.scatter([marker_week], [y], s=30, c=marker_color, marker="o", zorder=6)
 
             if tail_stage < actual_stage and marker_week is not None:
@@ -1494,10 +1729,6 @@ class MainWindow(QMainWindow):
                 tail_bounds = windows.get(tail_stage)
                 if tail_bounds is not None:
                     tail_week = (tail_bounds[0] + tail_bounds[1]) / 2.0
-                elif tail_stage == Stage.RELEASE:
-                    tail_week = first_start
-                elif tail_stage == Stage.COMPLETE:
-                    tail_week = last_end
 
                 if tail_week is not None:
                     tail_week = max(min_week, min(max_week, tail_week))
@@ -1522,25 +1753,21 @@ class MainWindow(QMainWindow):
         ax.tick_params(axis="y", pad=0)
         if y_positions:
             ax.set_ylim(-bar_height / 2.0, y_positions[-1] + (bar_height / 2.0))
-        tick_count = 5
-        ticks = [
-            float(min_week + ((max_week - min_week) * i / max(1, tick_count - 1)))
-            for i in range(tick_count)
-        ]
+        ticks = [float(current_week) + float(offset) for offset in range(-8, 9)]
         ax.set_xticks(ticks)
         ax.set_xticklabels(
             [self._week_value_to_date_label(value, current_week) for value in ticks],
-            fontsize=8,
+            fontsize=6,
+            rotation=45,
+            ha="right",
         )
         ax.grid(axis="x", color="#CBD5E1", linewidth=0.7, alpha=0.7)
         ax.margins(y=0.0)
-        ax.set_xlabel("Week of", fontsize=8)
+        ax.set_xlabel("Week of (8 weeks back / 8 weeks forward)", fontsize=8)
         legend_handles = [
-            Patch(facecolor=colors[Stage.RELEASE], label="Release"),
             Patch(facecolor=colors[Stage.LASER], label="Laser"),
             Patch(facecolor=colors[Stage.BEND], label="Bend"),
             Patch(facecolor=colors[Stage.WELD], label="Weld"),
-            Patch(facecolor=colors[Stage.COMPLETE], label="Complete"),
             Line2D([0], [0], color="#DC2626", linestyle="--", linewidth=1.2, label="Current week"),
             Line2D(
                 [0],
@@ -1550,7 +1777,7 @@ class MainWindow(QMainWindow):
                 markerfacecolor="#111827",
                 markersize=4.5,
                 linewidth=0,
-                label="Actual stage",
+                label="Actual stage (state-colored)",
             ),
         ]
         ax.legend(
@@ -1613,6 +1840,9 @@ class MainWindow(QMainWindow):
                     continue
                 absolute_windows: dict[Stage, tuple[float, float]] = {}
                 for stage, (start_week, end_week) in base_windows.items():
+                    if stage < tail_stage:
+                        # Do not render completed upstream stages unless they are part of the active tail.
+                        continue
                     start_value = self._normalize_week_around_current(
                         truck_start_week + start_week,
                         insights.current_week,
@@ -1624,9 +1854,11 @@ class MainWindow(QMainWindow):
                     if end_value < start_value:
                         end_value = start_value
                     absolute_windows[stage] = (start_value, end_value)
-                truck_token = str(truck.truck_number or "").strip().split()[0]
-                kit_token = str(kit.kit_name or "").strip().split()[0]
-                row_label = f"{truck_token:<10}{kit_token}"
+                if not absolute_windows:
+                    continue
+                truck_token = self._safe_row_token(truck.truck_number, "Truck?")
+                kit_token = self._safe_row_token(kit.kit_name, "Kit?")
+                row_label = f"{truck_token} | {kit_token}"
                 is_released = str(kit.release_state or "").strip().lower() == "released"
                 has_blocker = bool(str(kit.blocker or "").strip())
                 rows.append((row_label, absolute_windows, actual_stage, tail_stage, is_released, has_blocker))
@@ -1643,30 +1875,18 @@ class MainWindow(QMainWindow):
             )
         )
 
-        min_week = min(
-            start
-            for _label, windows, _actual_stage, _tail_stage, _is_released, _has_blocker in rows
-            for start, _end in windows.values()
-        )
-        max_week = max(
-            float(insights.current_week),
-            max(
-                end
-                for _label, windows, _actual_stage, _tail_stage, _is_released, _has_blocker in rows
-                for _start, end in windows.values()
-            ),
-        )
-        if max_week <= min_week:
-            max_week = min_week + 1.0
+        current_week = float(insights.current_week)
+        min_week = current_week - 8.0
+        max_week = current_week + 8.0
 
         chart_width = 30
-        now_idx = self._week_to_chart_index(float(insights.current_week), min_week, max_week, chart_width)
+        now_idx = self._week_to_chart_index(current_week, min_week, max_week, chart_width)
         min_label = self._week_value_to_date_label(min_week, insights.current_week)
         max_label = self._week_value_to_date_label(max_week, insights.current_week)
         current_label = self._week_value_to_date_label(insights.current_week, insights.current_week)
         self._gantt_meta_label.setText(
             f"Current: Week of {current_label}"
-            f" | Range: Week of {min_label} to Week of {max_label}"
+            f" | Window: Week of {min_label} to Week of {max_label}"
         )
 
         png_data = self._render_gantt_chart_png(
@@ -1695,22 +1915,15 @@ class MainWindow(QMainWindow):
             (Stage.WELD, "W"),
         ]
         actual_marker_map: dict[Stage, str] = {
-            Stage.RELEASE: "R",
             Stage.LASER: "L",
             Stage.BEND: "B",
             Stage.WELD: "W",
-            Stage.COMPLETE: "C",
         }
 
         self._gantt_table.setRowCount(len(rows))
-        for row_index, (row_label, windows, actual_stage, _tail_stage, _is_released, _has_blocker) in enumerate(rows):
+        for row_index, (row_label, windows, actual_stage, _tail_stage, is_released, _has_blocker) in enumerate(rows):
             scheduled = ["."] * chart_width
             actual = ["."] * chart_width
-
-            first_start = min(start for start, _end in windows.values())
-            last_end = max(end for _start, end in windows.values())
-            scheduled[self._week_to_chart_index(first_start, min_week, max_week, chart_width)] = "R"
-            scheduled[self._week_to_chart_index(last_end, min_week, max_week, chart_width)] = "C"
 
             for stage, char in scheduled_fill_map:
                 bounds = windows.get(stage)
@@ -1726,13 +1939,16 @@ class MainWindow(QMainWindow):
 
             marker = actual_marker_map.get(actual_stage)
             marker_week: float | None = None
-            stage_bounds = windows.get(actual_stage)
-            if stage_bounds is not None:
-                marker_week = (stage_bounds[0] + stage_bounds[1]) / 2.0
-            elif actual_stage == Stage.RELEASE:
-                marker_week = first_start
-            elif actual_stage == Stage.COMPLETE:
-                marker_week = last_end
+            if not is_released:
+                laser_bounds = windows.get(Stage.LASER)
+                laser_trailing_week = laser_bounds[1] if laser_bounds is not None else float(insights.current_week)
+                is_late_release = float(insights.current_week) > float(laser_trailing_week)
+                marker_week = float(insights.current_week) if is_late_release else float(laser_trailing_week)
+                marker = "!"
+            else:
+                stage_bounds = windows.get(actual_stage)
+                if stage_bounds is not None:
+                    marker_week = (stage_bounds[0] + stage_bounds[1]) / 2.0
             if marker_week is not None and marker:
                 actual[self._week_to_chart_index(marker_week, min_week, max_week, chart_width)] = marker
 
@@ -1786,7 +2002,97 @@ class MainWindow(QMainWindow):
         layout.addWidget(value_label)
         layout.addWidget(detail_label)
 
-        return {"frame": frame, "value": value_label, "detail": detail_label}
+        return {"frame": frame, "title": title_label, "value": value_label, "detail": detail_label}
+
+    def _create_pressure_gauge(self, title: str) -> dict[str, QWidget]:
+        frame = QFrame()
+        frame.setFrameShape(QFrame.StyledPanel)
+        frame.setStyleSheet(
+            """
+            QFrame {
+                background-color: #FFFFFF;
+                border: 1px solid #D5DEE7;
+                border-radius: 8px;
+            }
+            """
+        )
+
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(4)
+
+        title_label = QLabel(title)
+        title_label.setWordWrap(True)
+        title_label.setStyleSheet("font-size: 12px; color: #334155;")
+
+        value_label = QLabel("-")
+        value_label.setWordWrap(True)
+        value_label.setStyleSheet("font-size: 18px; font-weight: 700; color: #0F172A;")
+
+        gauge_bar = QProgressBar()
+        gauge_bar.setRange(0, 100)
+        gauge_bar.setValue(0)
+        gauge_bar.setTextVisible(False)
+        gauge_bar.setFixedHeight(12)
+
+        detail_label = QLabel("")
+        detail_label.setWordWrap(True)
+        detail_label.setStyleSheet("font-size: 11px; color: #475569;")
+
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+        layout.addWidget(gauge_bar)
+        layout.addWidget(detail_label)
+
+        return {
+            "frame": frame,
+            "title": title_label,
+            "value": value_label,
+            "bar": gauge_bar,
+            "detail": detail_label,
+        }
+
+    def _set_pressure_gauge(
+        self,
+        key: str,
+        *,
+        value: str,
+        percent: int,
+        detail: str,
+        tone: str,
+    ) -> None:
+        gauge = self._boss_summary_gauges.get(key)
+        if not gauge:
+            return
+
+        color_map = {
+            "ok": "#2E7D32",
+            "caution": "#A16207",
+            "problem": "#C62828",
+        }
+        color = color_map.get(str(tone or "").strip().lower(), "#0F172A")
+        clamped_percent = max(0, min(100, int(percent)))
+
+        value_label = gauge["value"]
+        detail_label = gauge["detail"]
+        bar = gauge["bar"]
+        value_label.setText(value)
+        value_label.setStyleSheet(f"font-size: 18px; font-weight: 700; color: {color};")
+        detail_label.setText(detail)
+        bar.setValue(clamped_percent)
+        bar.setStyleSheet(
+            f"""
+            QProgressBar {{
+                background-color: #E2E8F0;
+                border: 1px solid #CBD5E1;
+                border-radius: 6px;
+            }}
+            QProgressBar::chunk {{
+                background-color: {color};
+                border-radius: 6px;
+            }}
+            """
+        )
 
     def _update_schedule_panel(self) -> None:
         if not self._schedule_insights:
@@ -1808,6 +2114,8 @@ class MainWindow(QMainWindow):
         )
 
         hold_items = self._schedule_insights.release_hold_items
+        danger_color = "#FF6B6B" if self._minority_report_mode else "#B91C1C"
+        ok_color = "#7CFFB2" if self._minority_report_mode else "#2E7D32"
         if hold_items:
             oldest = hold_items[0]
             self._hold_summary_label.setText(
@@ -1815,10 +2123,14 @@ class MainWindow(QMainWindow):
                 f"{len(hold_items)} kit(s) blocked; oldest {oldest.hold_weeks:.1f} week(s) "
                 f"late ({oldest.truck_number} {oldest.kit_name})."
             )
-            self._hold_summary_label.setStyleSheet("font-size: 12px; font-weight: 700; color: #B91C1C;")
+            self._hold_summary_label.setStyleSheet(
+                f"font-size: 12px; font-weight: 700; color: {danger_color};"
+            )
         else:
             self._hold_summary_label.setText("Engineering release hold: none currently past planned start.")
-            self._hold_summary_label.setStyleSheet("font-size: 12px; font-weight: 700; color: #2E7D32;")
+            self._hold_summary_label.setStyleSheet(
+                f"font-size: 12px; font-weight: 700; color: {ok_color};"
+            )
 
         lines = ["Kit Lag / Duration (from truck planned start):"]
         for standard in self._schedule_insights.standards:
@@ -1909,33 +2221,39 @@ class MainWindow(QMainWindow):
 
         self._set_tile(
             "bend_buffer",
-            value=f"{metrics.bend_buffer.kit_count} kits ({metrics.bend_buffer.level.upper()})",
-            detail=(
-                f"Released kits in {stage_label(Stage.LASER).lower()}/"
-                f"{stage_label(Stage.BEND).lower()}"
-            ),
+            value=metrics.bend_buffer.level.upper(),
+            detail="3+ released kits in laser/bend is healthy.",
             tone=metrics.bend_buffer.level,
         )
 
         self._set_tile(
             "weld_feed",
-            value=f"{metrics.weld_feed.score:.1f} ({metrics.weld_feed.level.upper()})",
-            detail=(
-                f"Active kits in {stage_label(Stage.BEND).lower()}/"
-                f"{stage_label(Stage.WELD).lower()}"
-            ),
+            value=metrics.weld_feed.level.upper(),
+            detail="Flow readiness from bend into weld.",
             tone=metrics.weld_feed.level,
         )
 
     def _set_tile(self, key: str, value: str, detail: str, tone: str) -> None:
-        color_map = {
-            "ok": "#2E7D32",
-            "warning": "#C62828",
-            "empty": "#C62828",
-            "low": "#C62828",
-            "watch": "#EF6C00",
-            "healthy": "#2E7D32",
-        }
+        if self._minority_report_mode:
+            color_map = {
+                "ok": "#7CFFB2",
+                "warning": "#FF7A7A",
+                "empty": "#FF7A7A",
+                "dry": "#FF7A7A",
+                "low": "#FFC67A",
+                "watch": "#FFC67A",
+                "healthy": "#7CFFB2",
+            }
+        else:
+            color_map = {
+                "ok": "#2E7D32",
+                "warning": "#C62828",
+                "empty": "#C62828",
+                "dry": "#C62828",
+                "low": "#EF6C00",
+                "watch": "#EF6C00",
+                "healthy": "#2E7D32",
+            }
         color = color_map.get(tone, "#0F172A")
 
         tile = self._tile_widgets[key]
@@ -1948,15 +2266,52 @@ class MainWindow(QMainWindow):
 
     def _update_attention_panel(self, metrics: DashboardMetrics) -> None:
         self._attention_list.clear()
-        for index, item in enumerate(metrics.attention_items, start=1):
-            text = f"{index}. {item.title}: {item.detail}"
+        hold_items = []
+        if self._schedule_insights is not None:
+            hold_items = list(self._schedule_insights.release_hold_items)
+
+        shown_count = 0
+        seen_texts: set[str] = set()
+        for item in metrics.attention_items:
+            if hold_items and item.title == "Engineering release is holding work start":
+                # Kit-level lines below already cover this signal with more detail.
+                continue
+
+            shown_count += 1
+            text = f"{shown_count}. {item.title}: {item.detail}"
+            if text in seen_texts:
+                continue
+            seen_texts.add(text)
             if item.priority >= 90:
-                color = "#B91C1C"
+                color = "#FF7A7A" if self._minority_report_mode else "#B91C1C"
             elif item.priority >= 70:
-                color = "#A16207"
+                color = "#FFC67A" if self._minority_report_mode else "#A16207"
             else:
-                color = "#1F2937"
+                color = "#B7D5EA" if self._minority_report_mode else "#1F2937"
             self._attention_list.add_wrapped_item(text=text, color=color)
+        if not hold_items:
+            return
+
+        max_hold_rows = 8
+        next_index = shown_count + 1
+        for row_offset, hold in enumerate(hold_items[:max_hold_rows]):
+            rank = next_index + row_offset
+            text = (
+                f"{rank}. Late release kit: {hold.truck_number} {hold.kit_name} "
+                f"({hold.hold_weeks:.1f} week(s) late)"
+            )
+            self._attention_list.add_wrapped_item(
+                text=text,
+                color="#FF8B8B" if self._minority_report_mode else "#991B1B",
+            )
+
+        remaining = len(hold_items) - max_hold_rows
+        if remaining > 0:
+            text = f"{next_index + max_hold_rows}. {remaining} more late-release kit(s) not shown."
+            self._attention_list.add_wrapped_item(
+                text=text,
+                color="#FFD39A" if self._minority_report_mode else "#92400E",
+            )
 
     def _update_boss_lens_view(self, metrics: BossLensMetrics) -> None:
         for tile in metrics.tiles:
@@ -1975,11 +2330,65 @@ class MainWindow(QMainWindow):
             widget["detail"].setText(tile.detail)
 
         sync = metrics.sync_summary
-        self._boss_sync_label.setText(
-            f"{sync.in_sync_kits} kits in sync | {sync.behind_kits} kits behind | {sync.ahead_kits} kits ahead"
+        sync_total = max(1, int(sync.in_sync_kits + sync.behind_kits + sync.ahead_kits))
+        sync_percent = int(round((float(sync.in_sync_kits) / float(sync_total)) * 100.0))
+        if sync.behind_kits > 3:
+            sync_tone = "problem"
+        elif sync.behind_kits > 0:
+            sync_tone = "caution"
+        else:
+            sync_tone = "ok"
+        self._set_pressure_gauge(
+            "sync",
+            value=f"{sync_percent}% In Sync",
+            percent=sync_percent,
+            detail=f"{sync.in_sync_kits} sync | {sync.behind_kits} behind | {sync.ahead_kits} ahead",
+            tone=sync_tone,
         )
-        self._boss_release_label.setText(metrics.release_summary.summary)
-        self._boss_flow_label.setText(metrics.flow_summary)
+
+        release = metrics.release_summary
+        release_score = 100
+        release_score -= min(75, int(release.late_releases) * 15)
+        if not release.next_main_released:
+            release_score -= 25
+        release_score = max(0, min(100, release_score))
+        if release.late_releases > 2 or not release.next_main_released:
+            release_tone = "problem"
+        elif release.late_releases > 0:
+            release_tone = "caution"
+        else:
+            release_tone = "ok"
+        self._set_pressure_gauge(
+            "release",
+            value=f"{release_score}% Ready",
+            percent=release_score,
+            detail=release.summary,
+            tone=release_tone,
+        )
+
+        tile_by_key = {tile.key: tile for tile in metrics.tiles}
+        bend_tile = tile_by_key.get("bend_buffer")
+        weld_tile = tile_by_key.get("weld_feed")
+        score_by_tone = {"ok": 100, "caution": 65, "problem": 30}
+        bend_score = score_by_tone.get(str(getattr(bend_tile, "tone", "caution")), 65)
+        weld_score = score_by_tone.get(str(getattr(weld_tile, "tone", "caution")), 65)
+        flow_score = int(round((float(bend_score) + float(weld_score)) / 2.0))
+
+        flow_tone = "ok"
+        if str(getattr(bend_tile, "tone", "")) == "problem" or str(getattr(weld_tile, "tone", "")) == "problem":
+            flow_tone = "problem"
+        elif str(getattr(bend_tile, "tone", "")) == "caution" or str(getattr(weld_tile, "tone", "")) == "caution":
+            flow_tone = "caution"
+
+        bend_value = getattr(bend_tile, "value", "N/A")
+        weld_value = getattr(weld_tile, "value", "N/A")
+        self._set_pressure_gauge(
+            "flow",
+            value=f"{flow_score}% Flow",
+            percent=flow_score,
+            detail=f"Bend {bend_value} | Weld {weld_value}",
+            tone=flow_tone,
+        )
 
         self._boss_table.setRowCount(len(metrics.truck_rows))
         for row_index, row in enumerate(metrics.truck_rows):
@@ -2024,15 +2433,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "No Data", "No dashboard data is available to publish.")
                 return
 
-        dashboard_metrics = compute_dashboard_metrics(
-            self._trucks,
-            schedule_insights=self._schedule_insights,
-        )
-        payload = build_teams_webhook_payload(
-            trucks=self._trucks,
-            dashboard_metrics=dashboard_metrics,
-            schedule_insights=self._schedule_insights,
-            max_trucks=20,
+        payload, payload_size, row_limit = self._build_sized_dashboard_publish_payload(
+            max_payload_bytes=TEAMS_ADAPTIVE_CARD_MAX_PAYLOAD_BYTES,
         )
 
         output_path = Path(__file__).resolve().parent / "_runtime" / "teams_dashboard_card.json"
@@ -2041,11 +2443,20 @@ class MainWindow(QMainWindow):
 
         try:
             status = self._post_json_webhook(webhook_url, payload)
-            self.statusBar().showMessage(f"Published dashboard snapshot to Teams ({status}).", 4000)
+            self.statusBar().showMessage(
+                f"Published dashboard snapshot to Teams ({status}, {payload_size} bytes, {row_limit} rows).",
+                5000,
+            )
             QMessageBox.information(
                 self,
                 "Published",
-                f"Dashboard snapshot published to Teams.\nHTTP status: {status}\nPayload: {output_path}",
+                (
+                    "Dashboard snapshot published to Teams.\n"
+                    f"HTTP status: {status}\n"
+                    f"Payload bytes: {payload_size}\n"
+                    f"Rows: {row_limit}\n"
+                    f"Payload: {output_path}"
+                ),
             )
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace").strip()
@@ -2053,7 +2464,12 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 "Publish Failed",
-                f"Webhook HTTP error {exc.code}: {exc.reason}{body}",
+                (
+                    f"Webhook HTTP error {exc.code}: {exc.reason}\n"
+                    f"Payload bytes: {payload_size}\n"
+                    f"Rows: {row_limit}"
+                    f"{body}"
+                ),
             )
         except urllib.error.URLError as exc:
             QMessageBox.critical(
@@ -2078,17 +2494,13 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self.refresh_view()
         if self._schedule_insights is None:
-            self.refresh_view()
-            if self._schedule_insights is None:
-                QMessageBox.warning(self, "No Data", "No gantt data is available to publish.")
-                return
+            QMessageBox.warning(self, "No Data", "No gantt data is available to publish.")
+            return
 
-        payload = build_teams_gantt_only_webhook_payload(
-            trucks=self._trucks,
-            schedule_insights=self._schedule_insights,
-            max_trucks=30,
-            mention_name="cevenson",
+        payload, payload_size, row_limit, image_enabled = self._build_sized_gantt_publish_payload(
+            max_payload_bytes=TEAMS_ADAPTIVE_CARD_MAX_PAYLOAD_BYTES
         )
 
         output_path = Path(__file__).resolve().parent / "_runtime" / "teams_gantt_only_card.json"
@@ -2097,11 +2509,22 @@ class MainWindow(QMainWindow):
 
         try:
             status = self._post_json_webhook(webhook_url, payload)
-            self.statusBar().showMessage(f"Published gantt card to Teams ({status}).", 4000)
+            image_state = "image" if image_enabled else "text"
+            self.statusBar().showMessage(
+                f"Published gantt card to Teams ({status}, {payload_size} bytes, {row_limit} rows, {image_state}).",
+                5000,
+            )
             QMessageBox.information(
                 self,
                 "Published",
-                f"Gantt-only card published to Teams.\nHTTP status: {status}\nPayload: {output_path}",
+                (
+                    "Gantt-only card published to Teams.\n"
+                    f"HTTP status: {status}\n"
+                    f"Payload bytes: {payload_size}\n"
+                    f"Rows: {row_limit}\n"
+                    f"Mode: {image_state}\n"
+                    f"Payload: {output_path}"
+                ),
             )
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace").strip()
@@ -2109,7 +2532,13 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 "Publish Failed",
-                f"Webhook HTTP error {exc.code}: {exc.reason}{body}",
+                (
+                    f"Webhook HTTP error {exc.code}: {exc.reason}\n"
+                    f"Payload bytes: {payload_size}\n"
+                    f"Rows: {row_limit}\n"
+                    f"Mode: {'image' if image_enabled else 'text'}"
+                    f"{body}"
+                ),
             )
         except urllib.error.URLError as exc:
             QMessageBox.critical(
@@ -2123,6 +2552,99 @@ class MainWindow(QMainWindow):
                 "Publish Failed",
                 f"Unexpected error while publishing: {exc}",
             )
+
+    def _build_sized_gantt_publish_payload(
+        self,
+        *,
+        max_payload_bytes: int,
+    ) -> tuple[dict[str, object], int, int, bool]:
+        if self._schedule_insights is None:
+            return ({}, 0, 0, False)
+
+        candidates: tuple[tuple[int, bool], ...] = (
+            (24, True),
+            (20, True),
+            (16, True),
+            (12, True),
+            (10, True),
+            (24, False),
+            (20, False),
+            (16, False),
+            (12, False),
+            (8, False),
+            (6, False),
+        )
+
+        best_payload: dict[str, object] | None = None
+        best_size: int | None = None
+        best_rows = 0
+        best_image = False
+
+        for max_rows, allow_image in candidates:
+            payload = build_teams_gantt_only_webhook_payload(
+                trucks=self._trucks,
+                schedule_insights=self._schedule_insights,
+                max_trucks=max_rows,
+                mention_name="cevenson",
+                allow_image=allow_image,
+            )
+            payload_size = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+            if best_size is None or payload_size < best_size:
+                best_payload = payload
+                best_size = payload_size
+                best_rows = max_rows
+                best_image = allow_image
+            if payload_size <= max_payload_bytes:
+                return (payload, payload_size, max_rows, allow_image)
+
+        if best_payload is not None and best_size is not None:
+            return (best_payload, best_size, best_rows, best_image)
+
+        payload = build_teams_gantt_only_webhook_payload(
+            trucks=self._trucks,
+            schedule_insights=self._schedule_insights,
+            max_trucks=6,
+            mention_name="cevenson",
+            allow_image=False,
+        )
+        payload_size = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+        return (payload, payload_size, 6, False)
+
+    def _build_sized_dashboard_publish_payload(
+        self,
+        *,
+        max_payload_bytes: int,
+    ) -> tuple[dict[str, object], int, int]:
+        if self._schedule_insights is None:
+            return ({}, 0, 0)
+
+        candidates = (20, 16, 12, 10, 8, 6, 4)
+        best_payload: dict[str, object] | None = None
+        best_size: int | None = None
+        best_rows = 0
+
+        for max_rows in candidates:
+            dashboard_metrics = compute_dashboard_metrics(
+                self._trucks,
+                schedule_insights=self._schedule_insights,
+            )
+            payload = build_teams_webhook_payload(
+                trucks=self._trucks,
+                dashboard_metrics=dashboard_metrics,
+                schedule_insights=self._schedule_insights,
+                max_trucks=max_rows,
+            )
+            payload_size = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+            if best_size is None or payload_size < best_size:
+                best_payload = payload
+                best_size = payload_size
+                best_rows = max_rows
+            if payload_size <= max_payload_bytes:
+                return (payload, payload_size, max_rows)
+
+        if best_payload is not None and best_size is not None:
+            return (best_payload, best_size, best_rows)
+        return ({}, 0, 0)
 
     def _test_teams_webhook_auth(self) -> None:
         webhook_url = self._current_teams_webhook_url()
