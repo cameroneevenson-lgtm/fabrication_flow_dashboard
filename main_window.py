@@ -9,7 +9,9 @@ from pathlib import Path
 import time
 
 from PySide6.QtCore import QDate, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDateEdit,
@@ -18,6 +20,8 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -27,13 +31,22 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from board_widget import BoardWidget
 from database import FabricationDatabase
-from metrics import DashboardMetrics, compute_dashboard_metrics, sort_trucks_natural
+from metrics import (
+    BossLensMetrics,
+    DashboardMetrics,
+    compute_boss_lens_metrics,
+    compute_dashboard_metrics,
+    sort_trucks_natural,
+)
 from models import RELEASE_STATES, Truck, TruckKit
 from schedule import ScheduleInsights, build_schedule_insights
 from stages import STAGE_SEQUENCE, Stage, normalize_stage_span, stage_from_id, stage_label, stage_options
@@ -525,47 +538,10 @@ class MainWindow(QMainWindow):
             self._hot_reload_timer = self.startTimer(800)
             self._poll_hot_reload_request()
 
-        controls = QHBoxLayout()
-        plan_trucks_button = QPushButton("Manage Truck Plan")
-        plan_trucks_button.clicked.connect(self._on_manage_truck_plan)
-        refresh_button = QPushButton("Refresh")
-        refresh_button.clicked.connect(self.refresh_view)
-        controls.addWidget(plan_trucks_button)
-        controls.addWidget(refresh_button)
-        controls.addStretch(1)
-
-        self._status_label = QLabel("")
-        self._status_label.setWordWrap(True)
-        self._status_label.setStyleSheet("color: #475569;")
-        controls.addWidget(self._status_label)
-
-        root_layout.addLayout(controls)
-
-        self._health_strip = self._build_health_strip()
-        root_layout.addWidget(self._health_strip)
-
-        middle_layout = QHBoxLayout()
-        middle_layout.setSpacing(10)
-
-        self._board_widget = BoardWidget()
-        self._board_widget.set_week_lens_enabled(self._week_lens_enabled)
-        self._board_widget.kit_selected.connect(self._on_kit_selected)
-        self._board_widget.kit_stage_drop_requested.connect(self._on_kit_stage_drop_requested)
-        self._board_widget.kit_tail_forward_requested.connect(self._on_kit_tail_forward_requested)
-        middle_layout.addWidget(self._board_widget, 4)
-
-        right_column = QWidget()
-        right_column_layout = QVBoxLayout(right_column)
-        right_column_layout.setContentsMargins(0, 0, 0, 0)
-        right_column_layout.setSpacing(10)
-
-        attention_panel = self._build_attention_panel()
-
-        right_column_layout.addWidget(attention_panel, 1)
-
-        middle_layout.addWidget(right_column, 1)
-
-        root_layout.addLayout(middle_layout)
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._build_operations_tab(), "Operations")
+        self._tabs.addTab(self._build_boss_lens_tab(), "Boss Lens")
+        root_layout.addWidget(self._tabs, 1)
 
         self.refresh_view()
 
@@ -650,6 +626,174 @@ class MainWindow(QMainWindow):
         if self._hot_reload_bar is not None:
             self._hot_reload_bar.setVisible(False)
 
+    def _build_operations_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        controls = QHBoxLayout()
+        plan_trucks_button = QPushButton("Manage Truck Plan")
+        plan_trucks_button.clicked.connect(self._on_manage_truck_plan)
+        refresh_button = QPushButton("Refresh")
+        refresh_button.clicked.connect(self.refresh_view)
+        controls.addWidget(plan_trucks_button)
+        controls.addWidget(refresh_button)
+        controls.addStretch(1)
+
+        self._status_label = QLabel("")
+        self._status_label.setWordWrap(True)
+        self._status_label.setStyleSheet("color: #475569;")
+        controls.addWidget(self._status_label)
+        layout.addLayout(controls)
+
+        self._health_strip = self._build_health_strip()
+        layout.addWidget(self._health_strip)
+
+        middle_layout = QHBoxLayout()
+        middle_layout.setSpacing(10)
+
+        self._board_widget = BoardWidget()
+        self._board_widget.set_week_lens_enabled(self._week_lens_enabled)
+        self._board_widget.kit_selected.connect(self._on_kit_selected)
+        self._board_widget.kit_stage_drop_requested.connect(self._on_kit_stage_drop_requested)
+        self._board_widget.kit_tail_forward_requested.connect(self._on_kit_tail_forward_requested)
+        middle_layout.addWidget(self._board_widget, 4)
+
+        right_column = QWidget()
+        right_column_layout = QVBoxLayout(right_column)
+        right_column_layout.setContentsMargins(0, 0, 0, 0)
+        right_column_layout.setSpacing(10)
+        right_column_layout.addWidget(self._build_attention_panel(), 1)
+        middle_layout.addWidget(right_column, 1)
+
+        layout.addLayout(middle_layout)
+        return tab
+
+    def _build_boss_lens_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        tiles_panel = QFrame()
+        tiles_panel.setFrameShape(QFrame.StyledPanel)
+        tiles_panel.setStyleSheet(
+            """
+            QFrame {
+                background-color: #F8FAFC;
+                border: 1px solid #D5DEE7;
+                border-radius: 8px;
+            }
+            """
+        )
+        tiles_layout = QGridLayout(tiles_panel)
+        tiles_layout.setContentsMargins(8, 8, 8, 8)
+        tiles_layout.setHorizontalSpacing(8)
+        tiles_layout.setVerticalSpacing(8)
+
+        tile_specs = [
+            ("active_trucks", "Active Trucks"),
+            ("next_main_released", "Next Main Kit Released"),
+            ("bend_buffer", "Bend Buffer Health"),
+            ("weld_feed", "Weld Feed Health"),
+            ("behind_kits", "Kits Behind Master Schedule"),
+            ("late_releases", "Late Releases"),
+            ("blocked_kits", "Blocked Kits"),
+        ]
+        self._boss_tile_widgets: dict[str, dict[str, QWidget]] = {}
+        for index, (key, title) in enumerate(tile_specs):
+            row = 0 if index < 4 else 1
+            col = index if index < 4 else index - 4
+            tile = self._create_tile(title)
+            tiles_layout.addWidget(tile["frame"], row, col)
+            self._boss_tile_widgets[key] = tile
+
+        layout.addWidget(tiles_panel)
+
+        summary_panel = QFrame()
+        summary_panel.setFrameShape(QFrame.StyledPanel)
+        summary_panel.setStyleSheet(
+            """
+            QFrame {
+                background-color: #F8FAFC;
+                border: 1px solid #D5DEE7;
+                border-radius: 8px;
+            }
+            QLabel {
+                color: #334155;
+            }
+            """
+        )
+        summary_layout = QVBoxLayout(summary_panel)
+        summary_layout.setContentsMargins(10, 8, 10, 8)
+        summary_layout.setSpacing(6)
+
+        sync_title = QLabel("Schedule Sync")
+        sync_title.setStyleSheet("font-size: 14px; font-weight: 700; color: #0F172A;")
+        self._boss_sync_label = QLabel("-")
+        self._boss_sync_label.setWordWrap(True)
+        self._boss_sync_label.setStyleSheet("font-size: 12px;")
+
+        release_title = QLabel("Release Alignment")
+        release_title.setStyleSheet("font-size: 14px; font-weight: 700; color: #0F172A;")
+        self._boss_release_label = QLabel("-")
+        self._boss_release_label.setWordWrap(True)
+        self._boss_release_label.setStyleSheet("font-size: 12px;")
+
+        flow_title = QLabel("Flow Health")
+        flow_title.setStyleSheet("font-size: 14px; font-weight: 700; color: #0F172A;")
+        self._boss_flow_label = QLabel("-")
+        self._boss_flow_label.setWordWrap(True)
+        self._boss_flow_label.setStyleSheet("font-size: 12px;")
+
+        summary_layout.addWidget(sync_title)
+        summary_layout.addWidget(self._boss_sync_label)
+        summary_layout.addWidget(release_title)
+        summary_layout.addWidget(self._boss_release_label)
+        summary_layout.addWidget(flow_title)
+        summary_layout.addWidget(self._boss_flow_label)
+        layout.addWidget(summary_panel)
+
+        truck_panel = QFrame()
+        truck_panel.setFrameShape(QFrame.StyledPanel)
+        truck_panel.setStyleSheet(
+            """
+            QFrame {
+                background-color: #F8FAFC;
+                border: 1px solid #D5DEE7;
+                border-radius: 8px;
+            }
+            """
+        )
+        truck_layout = QVBoxLayout(truck_panel)
+        truck_layout.setContentsMargins(8, 8, 8, 8)
+        truck_layout.setSpacing(6)
+
+        truck_title = QLabel("Per-Truck Summary")
+        truck_title.setStyleSheet("font-size: 15px; font-weight: 700; color: #0F172A;")
+        truck_layout.addWidget(truck_title)
+
+        self._boss_table = QTableWidget(0, 6)
+        self._boss_table.setHorizontalHeaderLabels(
+            ["Truck", "Main Kit", "Sync", "Main Released", "Risk", "Issue"]
+        )
+        self._boss_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._boss_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self._boss_table.setAlternatingRowColors(True)
+        self._boss_table.verticalHeader().setVisible(False)
+        header = self._boss_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.Stretch)
+        truck_layout.addWidget(self._boss_table)
+
+        layout.addWidget(truck_panel, 1)
+        return tab
+
     def refresh_view(self) -> None:
         loaded_trucks = sort_trucks_natural(self.database.load_trucks_with_kits(active_only=True))
         self._trucks = [
@@ -675,8 +819,14 @@ class MainWindow(QMainWindow):
         )
 
         metrics = compute_dashboard_metrics(self._trucks, schedule_insights=self._schedule_insights)
+        boss_metrics = compute_boss_lens_metrics(
+            self._trucks,
+            schedule_insights=self._schedule_insights,
+            dashboard_metrics=metrics,
+        )
         self._update_health_strip(metrics)
         self._update_attention_panel(metrics)
+        self._update_boss_lens_view(boss_metrics)
 
         hold_count = len(self._schedule_insights.release_hold_items)
         self._status_label.setText(
@@ -1156,6 +1306,56 @@ class MainWindow(QMainWindow):
             else:
                 color = "#1F2937"
             self._attention_list.add_wrapped_item(text=text, color=color)
+
+    def _update_boss_lens_view(self, metrics: BossLensMetrics) -> None:
+        for tile in metrics.tiles:
+            widget = self._boss_tile_widgets.get(tile.key)
+            if not widget:
+                continue
+
+            color_map = {
+                "ok": "#2E7D32",
+                "caution": "#A16207",
+                "problem": "#C62828",
+            }
+            color = color_map.get(tile.tone, "#0F172A")
+            widget["value"].setText(tile.value)
+            widget["value"].setStyleSheet(f"font-size: 20px; font-weight: 700; color: {color};")
+            widget["detail"].setText(tile.detail)
+
+        sync = metrics.sync_summary
+        self._boss_sync_label.setText(
+            f"{sync.in_sync_kits} kits in sync | {sync.behind_kits} kits behind | {sync.ahead_kits} kits ahead"
+        )
+        self._boss_release_label.setText(metrics.release_summary.summary)
+        self._boss_flow_label.setText(metrics.flow_summary)
+
+        self._boss_table.setRowCount(len(metrics.truck_rows))
+        for row_index, row in enumerate(metrics.truck_rows):
+            values = [
+                row.truck_number,
+                row.main_stage,
+                row.sync_status,
+                row.main_released,
+                row.risk_category,
+                row.issue_summary,
+            ]
+            for col_index, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self._boss_table.setItem(row_index, col_index, item)
+
+            tone_color = {
+                "ok": "#1F2937",
+                "caution": "#92400E",
+                "problem": "#991B1B",
+            }.get(row.tone, "#1F2937")
+            risk_item = self._boss_table.item(row_index, 4)
+            issue_item = self._boss_table.item(row_index, 5)
+            if risk_item is not None:
+                risk_item.setForeground(QColor(tone_color))
+            if issue_item is not None:
+                issue_item.setForeground(QColor(tone_color))
 
 
 

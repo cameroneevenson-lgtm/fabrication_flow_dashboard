@@ -41,6 +41,49 @@ class DashboardMetrics:
     attention_items: list[AttentionItem]
 
 
+@dataclass
+class BossTile:
+    key: str
+    label: str
+    value: str
+    detail: str
+    tone: str
+
+
+@dataclass
+class BossSyncSummary:
+    ahead_kits: int
+    in_sync_kits: int
+    behind_kits: int
+
+
+@dataclass
+class BossReleaseSummary:
+    summary: str
+    late_releases: int
+    next_main_released: bool
+
+
+@dataclass
+class BossTruckRow:
+    truck_number: str
+    main_stage: str
+    sync_status: str
+    main_released: str
+    risk_category: str
+    issue_summary: str
+    tone: str
+
+
+@dataclass
+class BossLensMetrics:
+    tiles: list[BossTile]
+    sync_summary: BossSyncSummary
+    release_summary: BossReleaseSummary
+    flow_summary: str
+    truck_rows: list[BossTruckRow]
+
+
 def sort_trucks_natural(trucks: list[Truck]) -> list[Truck]:
     number_pattern = re.compile(r"(\d+)")
 
@@ -84,6 +127,214 @@ def compute_dashboard_metrics(
     )
 
 
+def compute_boss_lens_metrics(
+    trucks: list[Truck],
+    schedule_insights: ScheduleInsights | None = None,
+    dashboard_metrics: DashboardMetrics | None = None,
+) -> BossLensMetrics:
+    ordered_trucks = sort_trucks_natural(trucks)
+    insights = schedule_insights or build_schedule_insights(ordered_trucks)
+    metrics = dashboard_metrics or compute_dashboard_metrics(ordered_trucks, schedule_insights=insights)
+
+    hold_count_by_truck: dict[str, int] = {}
+    for item in insights.release_hold_items:
+        hold_count_by_truck[item.truck_number] = hold_count_by_truck.get(item.truck_number, 0) + 1
+
+    concurrency_by_truck = {
+        item.truck_number: int(item.upstream_open_count)
+        for item in insights.concurrency_items
+    }
+
+    window_by_kit_name: dict[str, list[tuple[Stage, float, float]]] = {}
+    for window in insights.kit_operation_windows:
+        key = str(window.kit_name or "").strip().lower()
+        if not key:
+            continue
+        stage = stage_from_id(window.stage_id)
+        window_by_kit_name.setdefault(key, []).append(
+            (stage, float(window.start_week), float(window.end_week))
+        )
+
+    for windows in window_by_kit_name.values():
+        windows.sort(key=lambda item: (item[1], item[2], int(item[0])))
+
+    behind_kits = 0
+    ahead_kits = 0
+    in_sync_kits = 0
+    blocked_kits = 0
+    truck_rows: list[BossTruckRow] = []
+
+    for truck in ordered_trucks:
+        truck_id = truck.id
+        truck_start_week = insights.truck_planned_start_week_by_id.get(int(truck_id or -1))
+
+        truck_blocked_count = 0
+        truck_behind_count = 0
+        main_sync_status = "In Sync"
+        main_kit = _find_main_body_kit(truck)
+        main_stage = "-"
+        main_released = "No"
+
+        for kit in truck.kits:
+            if not kit.is_active:
+                continue
+            if str(kit.blocker or "").strip():
+                blocked_kits += 1
+                truck_blocked_count += 1
+
+            expected_stage = _expected_stage_for_kit(
+                kit=kit,
+                current_week=insights.current_week,
+                truck_start_week=truck_start_week,
+                windows_by_kit_name=window_by_kit_name,
+            )
+            if expected_stage is None:
+                in_sync_kits += 1
+                continue
+
+            actual_stage = stage_from_id(kit.front_stage_id)
+            sync_key = _sync_key(actual_stage=actual_stage, expected_stage=expected_stage)
+            if sync_key == "behind":
+                behind_kits += 1
+                truck_behind_count += 1
+            elif sync_key == "ahead":
+                ahead_kits += 1
+            else:
+                in_sync_kits += 1
+
+            if main_kit and kit.id == main_kit.id:
+                main_sync_status = _sync_label(sync_key)
+
+        if main_kit:
+            main_stage = stage_label(main_kit.front_stage_id)
+            released = (
+                main_kit.release_state == "released"
+                or stage_from_id(main_kit.front_stage_id) > Stage.RELEASE
+            )
+            main_released = "Yes" if released else "No"
+
+        late_release_count = hold_count_by_truck.get(truck.truck_number, 0)
+        overlap_open_count = concurrency_by_truck.get(truck.truck_number, 0)
+
+        if late_release_count > 0:
+            risk_category = "Late Release"
+            issue_summary = f"{late_release_count} kit(s) late release."
+            tone = "problem"
+        elif truck_blocked_count > 0:
+            risk_category = "Blocked"
+            issue_summary = f"{truck_blocked_count} blocked kit(s)."
+            tone = "problem"
+        elif truck_behind_count > 0:
+            risk_category = "Fabrication Behind"
+            issue_summary = f"{truck_behind_count} kit(s) behind master schedule."
+            tone = "problem"
+        elif overlap_open_count > 0:
+            risk_category = "Overlapping Flow"
+            issue_summary = f"{overlap_open_count} upstream kit(s) still open."
+            tone = "caution"
+        else:
+            risk_category = "In Sync"
+            issue_summary = "None."
+            tone = "ok"
+
+        truck_rows.append(
+            BossTruckRow(
+                truck_number=truck.truck_number,
+                main_stage=main_stage,
+                sync_status=main_sync_status,
+                main_released=main_released,
+                risk_category=risk_category,
+                issue_summary=issue_summary,
+                tone=tone,
+            )
+        )
+
+    late_releases = len(insights.release_hold_items)
+    next_main_released = not metrics.next_main_kit_risk.is_warning
+
+    release_bits: list[str] = []
+    if late_releases > 0:
+        release_bits.append(f"{late_releases} kit(s) late release")
+    if not next_main_released:
+        release_bits.append("next truck body not released")
+    release_summary_text = "Main kit release on time." if not release_bits else "; ".join(release_bits) + "."
+
+    bend_health = metrics.bend_buffer.level.upper()
+    weld_health = metrics.weld_feed.level.upper()
+    active_trucks = len(ordered_trucks)
+
+    tiles = [
+        BossTile(
+            key="active_trucks",
+            label="Active Trucks",
+            value=str(active_trucks),
+            detail="Current trucks in active flow.",
+            tone="ok" if active_trucks > 0 else "caution",
+        ),
+        BossTile(
+            key="next_main_released",
+            label="Next Main Kit Released",
+            value="Yes" if next_main_released else "No",
+            detail=metrics.next_main_kit_risk.message,
+            tone="ok" if next_main_released else "problem",
+        ),
+        BossTile(
+            key="bend_buffer",
+            label="Bend Buffer Health",
+            value=bend_health,
+            detail=f"{metrics.bend_buffer.kit_count} kit(s) in laser/bend.",
+            tone=_tone_for_buffer(metrics.bend_buffer.level),
+        ),
+        BossTile(
+            key="weld_feed",
+            label="Weld Feed Health",
+            value=weld_health,
+            detail=f"Score {metrics.weld_feed.score:.1f}.",
+            tone=_tone_for_weld(metrics.weld_feed.level),
+        ),
+        BossTile(
+            key="behind_kits",
+            label="Kits Behind Master Schedule",
+            value=str(behind_kits),
+            detail="Compared to fixed schedule baseline.",
+            tone=_tone_for_count(behind_kits),
+        ),
+        BossTile(
+            key="late_releases",
+            label="Late Releases",
+            value=str(late_releases),
+            detail="Kits still not released past planned start.",
+            tone=_tone_for_count(late_releases),
+        ),
+        BossTile(
+            key="blocked_kits",
+            label="Blocked Kits",
+            value=str(blocked_kits),
+            detail="Kits with blocker text present.",
+            tone=_tone_for_count(blocked_kits),
+        ),
+    ]
+
+    return BossLensMetrics(
+        tiles=tiles,
+        sync_summary=BossSyncSummary(
+            ahead_kits=ahead_kits,
+            in_sync_kits=in_sync_kits,
+            behind_kits=behind_kits,
+        ),
+        release_summary=BossReleaseSummary(
+            summary=release_summary_text,
+            late_releases=late_releases,
+            next_main_released=next_main_released,
+        ),
+        flow_summary=(
+            f"Bend Buffer={bend_health} | Weld Feed={weld_health} | "
+            f"Active Trucks={active_trucks} | Blocked Kits={blocked_kits}"
+        ),
+        truck_rows=truck_rows,
+    )
+
+
 def _find_main_body_kit(truck: Truck) -> TruckKit | None:
     for kit in truck.kits:
         if not kit.is_active:
@@ -91,6 +342,97 @@ def _find_main_body_kit(truck: Truck) -> TruckKit | None:
         if kit.is_main_kit or kit.kit_name.lower() == "body":
             return kit
     return None
+
+
+def _stage_index(value: int | Stage) -> int:
+    stage = stage_from_id(value)
+    order = {
+        Stage.RELEASE: 0,
+        Stage.LASER: 1,
+        Stage.BEND: 2,
+        Stage.WELD: 3,
+        Stage.COMPLETE: 4,
+    }
+    return order.get(stage, 0)
+
+
+def _sync_key(actual_stage: Stage, expected_stage: Stage) -> str:
+    actual = _stage_index(actual_stage)
+    expected = _stage_index(expected_stage)
+    if actual < expected:
+        return "behind"
+    if actual > expected:
+        return "ahead"
+    return "in_sync"
+
+
+def _sync_label(sync_key: str) -> str:
+    if sync_key == "behind":
+        return "Behind"
+    if sync_key == "ahead":
+        return "Ahead"
+    return "In Sync"
+
+
+def _expected_stage_for_kit(
+    kit: TruckKit,
+    current_week: float,
+    truck_start_week: float | None,
+    windows_by_kit_name: dict[str, list[tuple[Stage, float, float]]],
+) -> Stage | None:
+    if truck_start_week is None:
+        return None
+    kit_key = str(kit.kit_name or "").strip().lower()
+    windows = windows_by_kit_name.get(kit_key, [])
+    if not windows:
+        return None
+
+    absolute: list[tuple[Stage, float, float]] = [
+        (stage, truck_start_week + start_week, truck_start_week + end_week)
+        for stage, start_week, end_week in windows
+    ]
+    absolute.sort(key=lambda item: (item[1], item[2], int(item[0])))
+
+    min_start = min(item[1] for item in absolute)
+    max_end = max(item[2] for item in absolute)
+    if current_week < min_start:
+        return Stage.RELEASE
+    if current_week >= max_end:
+        return Stage.COMPLETE
+
+    for stage, start_week, end_week in absolute:
+        if start_week <= current_week <= end_week:
+            return stage
+
+    expected = Stage.RELEASE
+    for stage, start_week, _end_week in absolute:
+        if current_week >= start_week:
+            expected = stage
+    return expected
+
+
+def _tone_for_count(value: int) -> str:
+    if value <= 0:
+        return "ok"
+    if value <= 2:
+        return "caution"
+    return "problem"
+
+
+def _tone_for_buffer(level: str) -> str:
+    if level == "healthy":
+        return "ok"
+    if level == "watch":
+        return "caution"
+    return "problem"
+
+
+def _tone_for_weld(level: str) -> str:
+    if level == "healthy":
+        return "ok"
+    if level == "watch":
+        return "caution"
+    return "problem"
 
 
 def _compute_next_main_kit_risk(trucks: list[Truck]) -> NextMainKitRisk:

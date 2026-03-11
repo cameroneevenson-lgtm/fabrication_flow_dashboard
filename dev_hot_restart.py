@@ -361,14 +361,13 @@ def main() -> int:
                 waited_for = max(0.0, now - request_posted_at)
                 if awaiting_user_decision and request_posted_at > 0.0 and waited_for >= decision_timeout:
                     batch_count = len(pending_changes)
-                    print(f"No in-app decision after {decision_timeout:.0f}s ({batch_count} file(s)).")
-                    if _warn_and_ask_hot_relaunch(batch_count, decision_timeout):
-                        print(f"Hot relaunch accepted in launcher; restarting app ({batch_count} file(s)).")
-                        _terminate_process(proc)
-                        proc = _spawn_app(py_exe, app_py, app_args, cwd=root)
-                        last_spawn_at = time.time()
-                    else:
-                        print("Hot relaunch rejected in launcher; keeping current session.")
+                    print(
+                        f"No in-app decision after {decision_timeout:.0f}s "
+                        f"({batch_count} file(s)); forcing reload."
+                    )
+                    _terminate_process(proc)
+                    proc = _spawn_app(py_exe, app_py, app_args, cwd=root)
+                    last_spawn_at = time.time()
                     pending_restart = False
                     awaiting_user_decision = False
                     current_request_id = ""
