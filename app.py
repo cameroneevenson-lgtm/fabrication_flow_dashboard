@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
@@ -42,7 +43,8 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         print(f"Truck registry sync skipped: {exc}")
 
-    window = MainWindow(database=database)
+    hot_reload_active = os.environ.get("FFD_HOT_RELOAD_ACTIVE") == "1"
+    window = MainWindow(database=database, hot_reload_active=hot_reload_active)
     window.show()
     _place_window_on_second_screen(app, window)
 

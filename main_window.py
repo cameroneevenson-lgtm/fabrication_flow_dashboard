@@ -468,7 +468,7 @@ class TruckPlanDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, database: FabricationDatabase):
+    def __init__(self, database: FabricationDatabase, hot_reload_active: bool = False):
         super().__init__()
         self.database = database
 
@@ -485,6 +485,21 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(10, 10, 10, 10)
         root_layout.setSpacing(10)
         self.setCentralWidget(root)
+
+        if hot_reload_active:
+            hot_reload_bar = QFrame()
+            hot_reload_bar.setFixedHeight(36)
+            hot_reload_bar.setStyleSheet(
+                "QFrame { background: #fff4cf; border: 1px solid #d7be6f; border-radius: 6px; }"
+                "QLabel { color: #4f3f07; background: transparent; border: none; }"
+            )
+            hot_reload_layout = QHBoxLayout(hot_reload_bar)
+            hot_reload_layout.setContentsMargins(10, 3, 10, 3)
+            hot_reload_layout.setSpacing(8)
+            hot_reload_label = QLabel("Hot Reload Active")
+            hot_reload_label.setStyleSheet("font-size: 13px; font-weight: 700;")
+            hot_reload_layout.addWidget(hot_reload_label)
+            root_layout.addWidget(hot_reload_bar)
 
         controls = QHBoxLayout()
         plan_trucks_button = QPushButton("Manage Truck Plan")
