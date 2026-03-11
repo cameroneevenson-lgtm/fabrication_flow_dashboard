@@ -56,6 +56,14 @@ A PySide6 application for tracking fabrication flow and schedule signals.
 - `truck_registry.csv` - truck registry input
 - `fabrication_flow.db` - local operational state
 
+## Technical specification
+
+- See [`docs/PROJECT_SPEC.md`](docs/PROJECT_SPEC.md) for:
+  - architecture and module responsibilities
+  - data model and workflow definitions
+  - gantt rendering rules and exceptions
+  - Teams payload sizing/degradation behavior
+
 ## Teams Adaptive Card payload (Operations Dashboard)
 
 The app includes a `Publish to Teams` button for an operations snapshot.
