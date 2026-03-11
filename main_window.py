@@ -33,7 +33,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -560,9 +559,7 @@ class MainWindow(QMainWindow):
             self._hot_reload_timer = self.startTimer(800)
             self._poll_hot_reload_request()
 
-        self._tabs = QTabWidget()
-        self._tabs.addTab(self._build_operations_tab(), "Operations")
-        root_layout.addWidget(self._tabs, 1)
+        root_layout.addWidget(self._build_operations_tab(), 1)
 
         self.refresh_view()
 
