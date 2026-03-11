@@ -6,6 +6,7 @@ import sqlite3
 import json
 from datetime import date, timedelta
 from pathlib import Path
+import time
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
@@ -492,6 +493,7 @@ class MainWindow(QMainWindow):
         self._hot_reload_reject_btn: QPushButton | None = None
         self._hot_reload_timer = None
         self._hot_reload_last_check = 0.0
+        self._hot_reload_end_time: float | None = None
 
         self.setWindowTitle("Fabrication Flow Dashboard")
         self.resize(1600, 900)
@@ -609,26 +611,45 @@ class MainWindow(QMainWindow):
         request_id = request.get("request_id", "").strip()
         if not request_id:
             return
-        if request_id == self._hot_reload_request_id:
-            return
+        if request_id != self._hot_reload_request_id:
+            self._hot_reload_request_id = request_id
+            ts_epoch = request.get("ts_epoch", 0)
+            timeout_sec = request.get("decision_timeout_sec", 10.0)
+            try:
+                ts_float = float(ts_epoch)
+            except (TypeError, ValueError):
+                ts_float = float(time.time())
+            try:
+                timeout_float = max(1.0, float(timeout_sec))
+            except (TypeError, ValueError):
+                timeout_float = 10.0
+            self._hot_reload_end_time = ts_float + timeout_float
 
-        self._hot_reload_request_id = request_id
+        now = float(time.time())
+        end_time = self._hot_reload_end_time
+        if end_time is None:
+            end_time = now + 10.0
+            self._hot_reload_end_time = end_time
+
         file_count = request.get("change_count", None)
         files = request.get("files", [])
+        seconds_remaining = max(0, int(end_time - now))
         file_text = f"{int(file_count)} file(s)" if isinstance(file_count, int) else "update(s)"
         if files:
             sample = ", ".join(str(x) for x in files[:3])
             if len(files) > 3:
                 sample += ", ..."
             self._hot_reload_label.setText(
-                f"Hot reload requested ({file_text}). Sample: {sample}"
+                f"Hot reload requested ({file_text}). Auto-reload in {seconds_remaining}s. Sample: {sample}"
             )
         else:
-            self._hot_reload_label.setText(f"Hot reload requested ({file_text}).")
+            self._hot_reload_label.setText(
+                f"Hot reload requested ({file_text}). Auto-reload in {seconds_remaining}s."
+            )
         if self._hot_reload_bar is not None:
             self._hot_reload_bar.setVisible(True)
 
-    def _read_hot_reload_request(self) -> dict[str, str | int | list[str]]:
+    def _read_hot_reload_request(self) -> dict[str, str | int | float | list[str]]:
         if self._hot_reload_request_path is None or not self._hot_reload_request_path.exists():
             return {}
         try:
@@ -638,8 +659,8 @@ class MainWindow(QMainWindow):
             return {}
         if not isinstance(payload, dict):
             return {}
-        out: dict[str, str | int | list[str]] = {}
-        for key in ("request_id", "change_count", "files"):
+        out: dict[str, str | int | float | list[str]] = {}
+        for key in ("request_id", "change_count", "files", "ts_epoch", "decision_timeout_sec"):
             if key not in payload:
                 continue
             out[key] = payload[key]  # type: ignore[assignment]
