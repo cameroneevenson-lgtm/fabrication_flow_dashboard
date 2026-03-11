@@ -557,7 +557,6 @@ class MainWindow(QMainWindow):
 
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_operations_tab(), "Operations")
-        self._tabs.addTab(self._build_boss_lens_tab(), "Management Summary")
         root_layout.addWidget(self._tabs, 1)
 
         self.refresh_view()
