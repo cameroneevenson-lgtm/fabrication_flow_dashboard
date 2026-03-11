@@ -44,7 +44,11 @@ def main() -> int:
         print(f"Truck registry sync skipped: {exc}")
 
     hot_reload_active = os.environ.get("FFD_HOT_RELOAD_ACTIVE") == "1"
-    window = MainWindow(database=database, hot_reload_active=hot_reload_active)
+    window = MainWindow(
+        database=database,
+        hot_reload_active=hot_reload_active,
+        runtime_dir=base_dir,
+    )
     window.show()
     _place_window_on_second_screen(app, window)
 

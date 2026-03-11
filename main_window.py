@@ -3,6 +3,7 @@
 import os
 import re
 import sqlite3
+import json
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -468,7 +469,13 @@ class TruckPlanDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, database: FabricationDatabase, hot_reload_active: bool = False):
+    def __init__(
+        self,
+        database: FabricationDatabase,
+        hot_reload_active: bool = False,
+        *,
+        runtime_dir: Path | None = None,
+    ):
         super().__init__()
         self.database = database
 
@@ -476,6 +483,15 @@ class MainWindow(QMainWindow):
         self._kit_index: dict[int, tuple[Truck, TruckKit]] = {}
         self._schedule_insights: ScheduleInsights | None = None
         self._week_lens_enabled = True
+        self._hot_reload_enabled = hot_reload_active
+        self._hot_reload_request_id: str = ""
+        self._hot_reload_request_path: Path | None = None
+        self._hot_reload_response_path: Path | None = None
+        self._hot_reload_bar: QFrame | None = None
+        self._hot_reload_accept_btn: QPushButton | None = None
+        self._hot_reload_reject_btn: QPushButton | None = None
+        self._hot_reload_timer = None
+        self._hot_reload_last_check = 0.0
 
         self.setWindowTitle("Fabrication Flow Dashboard")
         self.resize(1600, 900)
@@ -486,8 +502,12 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(10)
         self.setCentralWidget(root)
 
-        if hot_reload_active:
+        if self._hot_reload_enabled:
+            self._hot_reload_request_path = runtime_dir / "_runtime" / "hot_reload_request.json" if runtime_dir else None
+            self._hot_reload_response_path = runtime_dir / "_runtime" / "hot_reload_response.json" if runtime_dir else None
+
             hot_reload_bar = QFrame()
+            hot_reload_bar.setVisible(False)
             hot_reload_bar.setFixedHeight(36)
             hot_reload_bar.setStyleSheet(
                 "QFrame { background: #fff4cf; border: 1px solid #d7be6f; border-radius: 6px; }"
@@ -496,10 +516,26 @@ class MainWindow(QMainWindow):
             hot_reload_layout = QHBoxLayout(hot_reload_bar)
             hot_reload_layout.setContentsMargins(10, 3, 10, 3)
             hot_reload_layout.setSpacing(8)
-            hot_reload_label = QLabel("Hot Reload Active")
+            hot_reload_label = QLabel("Hot reload requested.")
             hot_reload_label.setStyleSheet("font-size: 13px; font-weight: 700;")
+            hot_reload_label.setObjectName("hot_reload_label")
+            hot_reload_accept = QPushButton("Accept Reload")
+            hot_reload_reject = QPushButton("Reject Reload")
+            hot_reload_accept.setMinimumHeight(26)
+            hot_reload_reject.setMinimumHeight(26)
+            hot_reload_accept.clicked.connect(self._on_hot_reload_accept)
+            hot_reload_reject.clicked.connect(self._on_hot_reload_reject)
             hot_reload_layout.addWidget(hot_reload_label)
+            hot_reload_layout.addWidget(hot_reload_accept)
+            hot_reload_layout.addWidget(hot_reload_reject)
             root_layout.addWidget(hot_reload_bar)
+            self._hot_reload_bar = hot_reload_bar
+            self._hot_reload_accept_btn = hot_reload_accept
+            self._hot_reload_reject_btn = hot_reload_reject
+            self._hot_reload_label = hot_reload_label
+
+            self._hot_reload_timer = self.startTimer(800)
+            self._poll_hot_reload_request()
 
         controls = QHBoxLayout()
         plan_trucks_button = QPushButton("Manage Truck Plan")
@@ -544,6 +580,90 @@ class MainWindow(QMainWindow):
         root_layout.addLayout(middle_layout)
 
         self.refresh_view()
+
+    def _on_hot_reload_accept(self) -> None:
+        self._write_hot_reload_response("accept")
+
+    def _on_hot_reload_reject(self) -> None:
+        self._write_hot_reload_response("reject")
+
+    def timerEvent(self, event):  # type: ignore[override]
+        if self._hot_reload_timer is not None and event.timerId() == self._hot_reload_timer:
+            self._poll_hot_reload_request()
+            return
+        super().timerEvent(event)
+
+    def _poll_hot_reload_request(self) -> None:
+        if not self._hot_reload_enabled:
+            return
+        if self._hot_reload_request_path is None or self._hot_reload_response_path is None:
+            return
+
+        if not self._hot_reload_request_path.exists():
+            if self._hot_reload_request_id:
+                self._hot_reload_request_id = ""
+                self._clear_hot_reload_banner()
+            return
+
+        request = self._read_hot_reload_request()
+        request_id = request.get("request_id", "").strip()
+        if not request_id:
+            return
+        if request_id == self._hot_reload_request_id:
+            return
+
+        self._hot_reload_request_id = request_id
+        file_count = request.get("change_count", None)
+        files = request.get("files", [])
+        file_text = f"{int(file_count)} file(s)" if isinstance(file_count, int) else "update(s)"
+        if files:
+            sample = ", ".join(str(x) for x in files[:3])
+            if len(files) > 3:
+                sample += ", ..."
+            self._hot_reload_label.setText(
+                f"Hot reload requested ({file_text}). Sample: {sample}"
+            )
+        else:
+            self._hot_reload_label.setText(f"Hot reload requested ({file_text}).")
+        if self._hot_reload_bar is not None:
+            self._hot_reload_bar.setVisible(True)
+
+    def _read_hot_reload_request(self) -> dict[str, str | int | list[str]]:
+        if self._hot_reload_request_path is None or not self._hot_reload_request_path.exists():
+            return {}
+        try:
+            with self._hot_reload_request_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        out: dict[str, str | int | list[str]] = {}
+        for key in ("request_id", "change_count", "files"):
+            if key not in payload:
+                continue
+            out[key] = payload[key]  # type: ignore[assignment]
+        return out
+
+    def _write_hot_reload_response(self, action: str) -> None:
+        if not self._hot_reload_request_id or self._hot_reload_response_path is None:
+            return
+        payload = {
+            "request_id": self._hot_reload_request_id,
+            "action": action,
+        }
+        try:
+            self._hot_reload_response_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._hot_reload_response_path.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            if self._hot_reload_bar is not None:
+                self._hot_reload_bar.setVisible(False)
+        except OSError:
+            pass
+
+    def _clear_hot_reload_banner(self) -> None:
+        if self._hot_reload_bar is not None:
+            self._hot_reload_bar.setVisible(False)
 
     def refresh_view(self) -> None:
         loaded_trucks = sort_trucks_natural(self.database.load_trucks_with_kits(active_only=True))
