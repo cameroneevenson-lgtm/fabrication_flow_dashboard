@@ -4,7 +4,15 @@ from datetime import date, datetime, timedelta
 
 from PySide6.QtCore import QMimeData, QPoint, Qt, Signal
 from PySide6.QtGui import QDrag
-from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from models import Truck, TruckKit
 from stages import STAGE_SEQUENCE, Stage, stage_from_id, stage_label
@@ -29,6 +37,23 @@ def _format_label(value: str) -> str:
 
 def _normalize_kit_name(value: str) -> str:
     return str(value or "").strip().lower()
+
+
+class _ClickableLabel(QLabel):
+    clicked = Signal()
+
+    def mouseReleaseEvent(self, event):  # type: ignore[override]
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mousePressEvent(self, event):  # type: ignore[override]
+        if event.button() == Qt.LeftButton:
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
 
 def _iso_week_start(value: float, year: int | None = None) -> str:
@@ -118,6 +143,7 @@ def _decode_drag_payload(payload: str) -> tuple[int, int] | None:
 
 class KitCard(QFrame):
     clicked = Signal(int)
+    tail_forward_requested = Signal(int)
 
     def __init__(
         self,
@@ -179,10 +205,27 @@ class KitCard(QFrame):
         layout.addWidget(meta_label)
 
         if back_stage != front_stage:
-            tail_label = QLabel(f"← {stage_label(back_stage)}")
+            tail_label = _ClickableLabel(f"TAIL @ {stage_label(back_stage).upper()}")
+            tail_label.setCursor(Qt.PointingHandCursor)
+            tail_label.setAlignment(Qt.AlignCenter)
             tail_label.setWordWrap(True)
-            tail_label.setStyleSheet("font-size: 10px; font-weight: 700; color: #7C2D12;")
+            tail_label.setStyleSheet(
+                """
+                QLabel {
+                    font-size: 11px;
+                    font-weight: 800;
+                    letter-spacing: 0.5px;
+                    color: #7C2D12;
+                    background-color: #FEE2E2;
+                    border: 1px solid #FB7185;
+                    border-radius: 4px;
+                    padding: 2px 6px;
+                }
+                """
+            )
             layout.addWidget(tail_label)
+            if kit.id is not None:
+                tail_label.clicked.connect(self._on_tail_forward_clicked)
 
         if release_hold_weeks is not None and not is_complete:
             hold_label = QLabel(f"ENG HOLD: {release_hold_weeks:.1f} week(s) past planned start")
@@ -216,6 +259,11 @@ class KitCard(QFrame):
             blocker_label.setWordWrap(True)
             blocker_label.setStyleSheet("font-size: 10px; color: #A53E2C;")
             layout.addWidget(blocker_label)
+
+    def _on_tail_forward_clicked(self) -> None:
+        if self._kit.id is None:
+            return
+        self.tail_forward_requested.emit(int(self._kit.id))
 
     def mousePressEvent(self, event):  # type: ignore[override]
         if event.button() == Qt.LeftButton and self._kit.id is not None:
@@ -396,6 +444,7 @@ class StageForwardFrame(QFrame):
 class TruckRowWidget(QFrame):
     kit_selected = Signal(int)
     kit_stage_dropped = Signal(int, int)
+    kit_tail_forward_requested = Signal(int)
 
     def __init__(
         self,
@@ -560,6 +609,7 @@ class TruckRowWidget(QFrame):
             week_bucket=week_bucket,
         )
         card.clicked.connect(self.kit_selected.emit)
+        card.tail_forward_requested.connect(self.kit_tail_forward_requested.emit)
         return card
 
     def _add_cards_flat(self, stage_layout: QVBoxLayout, stage_kits: list[TruckKit], stage_id: int) -> None:
@@ -620,6 +670,7 @@ class TruckRowWidget(QFrame):
 class BoardWidget(QWidget):
     kit_selected = Signal(int)
     kit_stage_drop_requested = Signal(int, int)
+    kit_tail_forward_requested = Signal(int)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -685,6 +736,7 @@ class BoardWidget(QWidget):
             )
             row_widget.kit_selected.connect(self.kit_selected.emit)
             row_widget.kit_stage_dropped.connect(self.kit_stage_drop_requested.emit)
+            row_widget.kit_tail_forward_requested.connect(self.kit_tail_forward_requested.emit)
             self._content_layout.addWidget(row_widget)
 
         self._content_layout.addStretch(1)

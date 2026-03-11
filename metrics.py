@@ -118,6 +118,7 @@ def _compute_next_main_kit_risk(trucks: list[Truck]) -> NextMainKitRisk:
 
 def _compute_bend_buffer(trucks: list[Truck]) -> BendBufferHealth:
     count = 0
+    has_body_in_buffer = False
     for truck in trucks:
         for kit in truck.kits:
             if not kit.is_active:
@@ -127,11 +128,15 @@ def _compute_bend_buffer(trucks: list[Truck]) -> BendBufferHealth:
             front_stage = stage_from_id(kit.front_stage_id)
             if front_stage in {Stage.LASER, Stage.BEND}:
                 count += 1
+                if kit.is_main_kit or kit.kit_name.strip().lower() == "body":
+                    has_body_in_buffer = True
 
     if count == 0:
         level = "empty"
-    elif count <= 2:
+    elif count <= 2 and not has_body_in_buffer:
         level = "low"
+    elif count <= 2:
+        level = "watch"
     else:
         level = "healthy"
 

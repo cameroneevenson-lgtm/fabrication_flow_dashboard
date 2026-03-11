@@ -12,7 +12,11 @@ A PySide6 application for tracking fabrication flow and schedule signals.
    ```powershell
    .\.venv\Scripts\python.exe app.py
    ```
-3. For live reload:
+3. For live reload (preferred):
+   ```powershell
+   .\dev_run.bat
+   ```
+4. Compatibility command (same launcher behavior):
    ```powershell
    .\.venv\Scripts\python.exe watch_and_run.py
    ```

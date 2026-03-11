@@ -34,8 +34,7 @@ from database import FabricationDatabase
 from metrics import DashboardMetrics, compute_dashboard_metrics, sort_trucks_natural
 from models import RELEASE_STATES, Truck, TruckKit
 from schedule import ScheduleInsights, build_schedule_insights
-from stages import Stage, normalize_stage_span, stage_from_id, stage_label, stage_options
-from truck_registry import CSV_FILENAME, sync_truck_registry
+from stages import STAGE_SEQUENCE, Stage, normalize_stage_span, stage_from_id, stage_label, stage_options
 
 
 def _fmt_week(value: float) -> str:
@@ -490,12 +489,9 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         plan_trucks_button = QPushButton("Manage Truck Plan")
         plan_trucks_button.clicked.connect(self._on_manage_truck_plan)
-        wipe_db_button = QPushButton("Wipe DB (Dev)")
-        wipe_db_button.clicked.connect(self._on_wipe_db_clicked)
         refresh_button = QPushButton("Refresh")
         refresh_button.clicked.connect(self.refresh_view)
         controls.addWidget(plan_trucks_button)
-        controls.addWidget(wipe_db_button)
         controls.addWidget(refresh_button)
         controls.addStretch(1)
 
@@ -516,6 +512,7 @@ class MainWindow(QMainWindow):
         self._board_widget.set_week_lens_enabled(self._week_lens_enabled)
         self._board_widget.kit_selected.connect(self._on_kit_selected)
         self._board_widget.kit_stage_drop_requested.connect(self._on_kit_stage_drop_requested)
+        self._board_widget.kit_tail_forward_requested.connect(self._on_kit_tail_forward_requested)
         middle_layout.addWidget(self._board_widget, 4)
 
         right_column = QWidget()
@@ -606,33 +603,6 @@ class MainWindow(QMainWindow):
         self.refresh_view()
         self.statusBar().showMessage("Truck plan updated.", 3000)
 
-    def _on_wipe_db_clicked(self) -> None:
-        answer = QMessageBox.question(
-            self,
-            "Wipe Database (Dev)",
-            "This will delete all local data and recreate the local database. Continue?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if answer != QMessageBox.Yes:
-            return
-
-        try:
-            self.database.wipe_database()
-            sync_truck_registry(
-                database=self.database,
-                csv_path=Path(__file__).resolve().parent / CSV_FILENAME,
-            )
-        except OSError as exc:
-            QMessageBox.critical(self, "Wipe Failed", f"Could not wipe database: {exc}")
-            return
-        except (sqlite3.Error, ValueError) as exc:
-            QMessageBox.critical(self, "Wipe Failed", f"Database error: {exc}")
-            return
-
-        self.refresh_view()
-        self.statusBar().showMessage("Local database wiped.", 5000)
-
     def _on_kit_selected(self, kit_id: int) -> None:
         result = self._kit_index.get(kit_id)
         if not result:
@@ -705,6 +675,43 @@ class MainWindow(QMainWindow):
         self.refresh_view()
         self.statusBar().showMessage(
             f"Moved {truck.truck_number} {kit.kit_name} to {stage_label(target_stage)}",
+            3000,
+        )
+
+    def _on_kit_tail_forward_requested(self, kit_id: int) -> None:
+        result = self._kit_index.get(kit_id)
+        if not result:
+            return
+
+        truck, kit = result
+        front_stage = stage_from_id(kit.front_stage_id)
+        back_stage = stage_from_id(kit.back_stage_id)
+        if back_stage >= front_stage:
+            return
+
+        back_index = STAGE_SEQUENCE.index(back_stage)
+        next_back_stage = STAGE_SEQUENCE[min(back_index + 1, len(STAGE_SEQUENCE) - 1)]
+        if next_back_stage > front_stage:
+            next_back_stage = front_stage
+        if next_back_stage == back_stage:
+            return
+
+        try:
+            self.database.update_truck_kit(
+                kit_id=kit_id,
+                release_state=kit.release_state,
+                front_stage_id=int(front_stage),
+                back_stage_id=int(next_back_stage),
+                blocker=kit.blocker,
+                is_active=kit.is_active,
+            )
+        except sqlite3.Error as exc:
+            QMessageBox.critical(self, "Tail Collapse Failed", f"Could not collapse kit tail: {exc}")
+            return
+
+        self.refresh_view()
+        self.statusBar().showMessage(
+            f"Collapsed tail for {truck.truck_number} {kit.kit_name} to {stage_label(next_back_stage)}",
             3000,
         )
 
