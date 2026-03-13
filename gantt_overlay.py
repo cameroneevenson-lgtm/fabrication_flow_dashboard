@@ -271,19 +271,45 @@ def classify_front_status(
     *,
     released: bool,
     blocked: bool,
+    front_stage: Stage,
     expected_position: int,
     front_position: int,
+    expected_week: float | None = None,
+    front_week: float | None = None,
+    schedule_tolerance_weeks: float = 1.0,
+    current_week: float | None = None,
 ) -> tuple[str, str]:
-    # Priority ordering intentionally follows the hard business rules from the overlay spec.
+    # Reduced decision rules:
+    # - blocked => red
+    # - unreleased overdue => red
+    # - unreleased due within 1 week => yellow
+    # - unreleased not due yet => black
+    # - released late in final weld => yellow
+    # - released within +/- tolerance of master timeline => green
+    # - released more than tolerance late => yellow
+    # - released more than tolerance ahead => blue
+    # - no position-based fallback: if week context is missing, default released to green
     if blocked:
         return ("red", STATUS_COLORS["red"])
-    if (not released) and expected_position >= LASER_START_POSITION:
-        return ("red", STATUS_COLORS["red"])
-    if (not released) and expected_position < LASER_START_POSITION:
+    if not released:
+        if expected_week is not None and current_week is not None:
+            due_delta = float(expected_week) - float(current_week)
+            if due_delta < 0.0:
+                return ("red", STATUS_COLORS["red"])
+            if due_delta <= 1.0:
+                return ("yellow", STATUS_COLORS["yellow"])
+            return ("black", STATUS_COLORS["black"])
+        if expected_position >= LASER_START_POSITION:
+            return ("red", STATUS_COLORS["red"])
         return ("black", STATUS_COLORS["black"])
-    if released and front_position < expected_position:
-        return ("yellow", STATUS_COLORS["yellow"])
-    if released and front_position > expected_position:
+    if released and front_week is not None and current_week is not None:
+        week_delta = float(front_week) - float(current_week)
+        if front_stage >= Stage.WELD and current_week is not None and float(front_week) < float(current_week):
+            return ("yellow", STATUS_COLORS["yellow"])
+        if abs(week_delta) <= float(schedule_tolerance_weeks):
+            return ("green", STATUS_COLORS["green"])
+        if week_delta < 0:
+            return ("yellow", STATUS_COLORS["yellow"])
         return ("blue", STATUS_COLORS["blue"])
     return ("green", STATUS_COLORS["green"])
 
@@ -378,15 +404,6 @@ def build_overlay_rows(
                 display_front_position = front_position
                 display_back_position = back_position
 
-            status_key, status_color = classify_front_status(
-                released=released,
-                blocked=blocked,
-                expected_position=expected_position,
-                front_position=display_front_position,
-            )
-            is_not_due = (not released) and expected_position < LASER_START_POSITION
-            is_behind = display_front_position < expected_position and not is_not_due
-
             front_week = overlay_position_to_week(
                 position=display_front_position,
                 windows=baseline_windows,
@@ -397,13 +414,30 @@ def build_overlay_rows(
                 windows=baseline_windows,
                 fallback_week=float(schedule_insights.current_week),
             )
-            expected_week: float | None = None
-            if is_behind and expected_position >= LASER_START_POSITION:
-                expected_week = overlay_position_to_week(
+            scheduled_front_week: float | None = None
+            if expected_position >= LASER_START_POSITION:
+                scheduled_front_week = overlay_position_to_week(
                     position=expected_position,
                     windows=baseline_windows,
                     fallback_week=float(schedule_insights.current_week),
                 )
+            status_key, status_color = classify_front_status(
+                released=released,
+                blocked=blocked,
+                front_stage=front_stage,
+                expected_position=expected_position,
+                front_position=display_front_position,
+                expected_week=scheduled_front_week,
+                front_week=front_week,
+                current_week=float(schedule_insights.current_week),
+            )
+            is_not_due = (not released) and expected_position < LASER_START_POSITION
+            is_behind = bool(
+                (released and float(front_week) < float(schedule_insights.current_week))
+                or (released and scheduled_front_week is not None and (float(front_week) < (float(scheduled_front_week) - 1.0)))
+                or ((not released) and status_key == "red")
+            )
+            expected_week: float | None = scheduled_front_week if is_behind else None
 
             latest_due_week = max(float(end) for _start, end in baseline_windows.values())
             truck_label = str(truck.truck_number or "Truck?").strip() or "Truck?"
@@ -456,6 +490,37 @@ def build_overlay_rows(
     return rows[: max(1, int(max_rows))]
 
 
+def normalize_overlay_row_labels(
+    rows: list[OverlayRow],
+    *,
+    truck_width: int | None = None,
+    kit_width: int | None = None,
+) -> list[OverlayRow]:
+    if not rows:
+        return []
+
+    parsed_labels = [str(row.row_label or "").split(" | ", 1) for row in rows]
+    normalized_truck_width = max(
+        int(truck_width or 0),
+        max(len(parts[0].rstrip()) for parts in parsed_labels if parts),
+    )
+    normalized_kit_width = max(
+        int(kit_width or 0),
+        max(len(parts[1].rstrip()) for parts in parsed_labels if len(parts) > 1),
+    )
+    return [
+        replace(
+            row,
+            row_label=(
+                f"{parts[0].rstrip():<{normalized_truck_width}} | {parts[1].rstrip():<{normalized_kit_width}}"
+                if len(parts) > 1
+                else str(row.row_label or "")
+            ),
+        )
+        for row, parts in zip(rows, parsed_labels)
+    ]
+
+
 def compute_overlay_viewport(
     *,
     rows: list[OverlayRow],
@@ -463,20 +528,24 @@ def compute_overlay_viewport(
     forward_horizon_weeks: float = 8.0,
     side_padding_weeks: float = 0.35,
 ) -> tuple[float, float]:
+    week_start_anchor = math.floor(float(current_week))
     if not rows:
-        return (float(current_week) - 0.35, float(current_week) + float(forward_horizon_weeks) + 0.35)
+        return (
+            float(week_start_anchor) - float(side_padding_weeks),
+            float(week_start_anchor) + float(forward_horizon_weeks) + float(side_padding_weeks),
+        )
 
     behind_left_edges = [
         min(float(row.front_week), float(row.back_week))
         for row in rows
         if row.is_behind
     ]
-    left_anchor = min(behind_left_edges) if behind_left_edges else float(current_week)
+    left_anchor = min(behind_left_edges) if behind_left_edges else float(week_start_anchor)
 
     latest_due_week = max(float(row.latest_due_week) for row in rows)
-    right_anchor = max(float(current_week) + float(forward_horizon_weeks), latest_due_week)
+    right_anchor = max(float(week_start_anchor) + float(forward_horizon_weeks), latest_due_week)
 
-    min_week = min(left_anchor, float(current_week)) - float(side_padding_weeks)
+    min_week = min(left_anchor, float(week_start_anchor)) - float(side_padding_weeks)
     max_week = right_anchor + float(side_padding_weeks)
     if max_week <= min_week:
         max_week = min_week + 1.0
@@ -484,8 +553,8 @@ def compute_overlay_viewport(
 
 
 def build_week_ticks(*, current_week: float, min_week: float, max_week: float) -> list[float]:
-    start_offset = int(math.floor(float(min_week) - float(current_week)))
-    end_offset = int(math.ceil(float(max_week) - float(current_week)))
+    start_offset = int(math.ceil(float(min_week) - float(current_week)))
+    end_offset = int(math.ceil(float(max_week) - float(current_week))) - 1
     if end_offset < start_offset:
         end_offset = start_offset
     return [float(current_week) + float(offset) for offset in range(start_offset, end_offset + 1)]
@@ -507,6 +576,7 @@ def render_overlay_png(
     x_label_size: float = 6.0,
     x_label_text: str = "Week of",
     legend_size: float = 6.0,
+    dark_mode: bool = False,
 ) -> bytes | None:
     try:
         import matplotlib
@@ -525,6 +595,29 @@ def render_overlay_png(
     row_step = bar_height
     fig_height = max(float(fig_min_height), (float(fig_height_per_row) * len(ordered_rows)) + 0.45)
     fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=dpi)
+
+    if dark_mode:
+        plot_bg = "#061321"
+        figure_bg = "#061321"
+        text_color = "#C6D8E6"
+        line_color = "#92ABC1"
+        back_fill = "#0D2133"
+        separator_color = "#274157"
+        grid_color = "#7AA7C4"
+        legend_face = "#081B2B"
+        legend_edge = "#4D6A84"
+        today_color = "#FF6B6B"
+    else:
+        plot_bg = "#FFFFFF"
+        figure_bg = "#FFFFFF"
+        text_color = "#0F172A"
+        line_color = "#4B5563"
+        back_fill = "#F8FAFC"
+        separator_color = "#D9E2EC"
+        grid_color = "#94A3B8"
+        legend_face = "#FFFFFF"
+        legend_edge = "#CBD5E1"
+        today_color = "#DC2626"
 
     y_positions: list[float] = []
     labels: list[str] = []
@@ -557,7 +650,7 @@ def render_overlay_png(
             y,
             line_start,
             line_end,
-            color="#4B5563",
+            color=line_color,
             linewidth=1.1,
             alpha=0.9,
             zorder=5,
@@ -566,7 +659,7 @@ def render_overlay_png(
             [clipped_back],
             [y],
             s=28,
-            facecolors="#F8FAFC",
+            facecolors=back_fill,
             edgecolors=NEUTRAL_BACK_COLOR,
             linewidths=1.1,
             marker="o",
@@ -583,7 +676,7 @@ def render_overlay_png(
 
         if row.is_behind:
             target_week_value = float(current_week)
-            if row.status_key not in {"red", "yellow"}:
+            if row.status_key not in {"red", "yellow"} and float(row.front_week) >= float(current_week):
                 target_week_value = float(row.expected_week) if row.expected_week is not None else float(current_week)
             target_week = max(float(min_week), min(float(max_week), target_week_value))
             if target_week > (clipped_front + 0.01):
@@ -609,19 +702,18 @@ def render_overlay_png(
                 separator_y,
                 float(min_week),
                 float(max_week),
-                color="#D9E2EC",
+                color=separator_color,
                 linewidth=0.6,
                 alpha=0.75,
                 zorder=1.5,
             )
 
-    ax.axvline(float(current_week), color="#DC2626", linestyle="--", linewidth=1.2, zorder=4)
     ax.set_xlim(float(min_week), float(max_week))
     ax.set_yticks(y_positions)
-    ax.set_yticklabels(labels, fontsize=y_label_size, fontfamily="DejaVu Sans Mono")
-    ax.tick_params(axis="y", pad=0)
+    ax.set_yticklabels(labels, fontsize=y_label_size, fontfamily="DejaVu Sans Mono", color=text_color)
+    ax.tick_params(axis="y", pad=0, colors=text_color)
     if y_positions:
-        ax.set_ylim(-bar_height / 2.0, y_positions[-1] + (bar_height / 2.0))
+        ax.set_ylim(-bar_height / 2.0, y_positions[-1] + (bar_height / 2.0) + row_step)
 
     week_start_anchor = math.floor(float(current_week))
     ticks = build_week_ticks(current_week=float(week_start_anchor), min_week=float(min_week), max_week=float(max_week))
@@ -631,27 +723,60 @@ def render_overlay_png(
         fontsize=x_label_size,
         rotation=45,
         ha="right",
+        color=text_color,
     )
-    ax.grid(axis="x", color="#94A3B8", linewidth=0.45, alpha=0.28, zorder=1)
+    ax.tick_params(axis="x", colors=text_color)
+    if y_positions:
+        grid_ymin = -bar_height / 2.0
+        grid_ymax = y_positions[-1] + (bar_height / 2.0)
+        for tick in ticks:
+            ax.vlines(
+                float(tick),
+                grid_ymin,
+                grid_ymax,
+                color=grid_color,
+                linewidth=0.45,
+                alpha=0.28,
+                zorder=1,
+            )
+        ax.vlines(
+            float(current_week),
+            grid_ymin,
+            grid_ymax,
+            color=today_color,
+            linestyle="--",
+            linewidth=1.2,
+            zorder=4,
+        )
     ax.margins(y=0.0)
-    ax.set_xlabel(x_label_text, fontsize=max(6.0, float(x_label_size) + 1.0))
+    if x_label_text:
+        ax.set_xlabel(x_label_text, fontsize=max(6.0, float(x_label_size) + 1.0), color=text_color)
 
     legend_handles = [
         Patch(facecolor=STAGE_BAR_COLORS[Stage.LASER], alpha=STAGE_BAR_ALPHA, label="LASER"),
         Patch(facecolor=STAGE_BAR_COLORS[Stage.BEND], alpha=STAGE_BAR_ALPHA, label="BEND"),
         Patch(facecolor=STAGE_BAR_COLORS[Stage.WELD], alpha=STAGE_BAR_ALPHA, label="WELD"),
-        Line2D([0], [0], color="#DC2626", linestyle="--", linewidth=1.2, label="TODAY"),
+        Line2D([0], [0], color=today_color, linestyle="--", linewidth=1.2, label="TODAY"),
     ]
-    ax.legend(
+    legend = ax.legend(
         handles=legend_handles,
         loc="upper right",
         fontsize=legend_size,
         frameon=True,
         framealpha=0.95,
-        edgecolor="#CBD5E1",
+        edgecolor=legend_edge,
     )
-    ax.set_facecolor("#FFFFFF")
-    fig.patch.set_facecolor("#FFFFFF")
+    if legend is not None:
+        legend.get_frame().set_facecolor(legend_face)
+        legend.get_frame().set_edgecolor(legend_edge)
+        for text in legend.get_texts():
+            text.set_color(text_color)
+    ax.set_facecolor(plot_bg)
+    fig.patch.set_facecolor(figure_bg)
+    ax.spines["left"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["top"].set_visible(False)
+    ax.spines["bottom"].set_color(separator_color)
     fig.tight_layout(pad=0.2)
 
     try:

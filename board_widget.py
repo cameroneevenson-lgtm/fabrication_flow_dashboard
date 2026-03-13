@@ -22,12 +22,17 @@ from gantt_overlay import (
     classify_front_status,
     expected_position_for_week,
     normalize_position_span,
+    overlay_position_to_week,
 )
 from models import Truck, TruckKit, first_pdf_link
 from stages import STAGE_SEQUENCE, Stage, stage_from_id, stage_label
 
 TRUCK_COL_WIDTH = 200
 STAGE_COL_WIDTH = 190
+TRUCK_COL_MIN_WIDTH = 124
+STAGE_COL_MIN_WIDTH = 112
+BOARD_COL_SPACING = 4
+BOARD_COL_MARGIN = 4
 ACCENT_COLORS = ["#1F4E79", "#2F6B2F", "#8A5B1F", "#7A2F6B", "#006D77", "#5A4FCF"]
 DRAG_MIME_PREFIX = "kitmove"
 SCHEDULE_LANE_ORDER = ["late", "this_week", "next", "future", "unplanned"]
@@ -462,10 +467,11 @@ class TruckRowWidget(QFrame):
         )
 
         row_layout = QHBoxLayout(self)
-        row_layout.setContentsMargins(6, 6, 6, 6)
-        row_layout.setSpacing(6)
+        row_layout.setContentsMargins(BOARD_COL_MARGIN, BOARD_COL_MARGIN, BOARD_COL_MARGIN, BOARD_COL_MARGIN)
+        row_layout.setSpacing(BOARD_COL_SPACING)
 
         truck_info = QWidget()
+        self._truck_info = truck_info
         truck_info.setFixedWidth(TRUCK_COL_WIDTH)
         truck_info_layout = QVBoxLayout(truck_info)
         truck_info_layout.setContentsMargins(0, 0, 0, 0)
@@ -475,19 +481,19 @@ class TruckRowWidget(QFrame):
         truck_label.setWordWrap(True)
         truck_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         if self._dark_mode:
-            truck_label.setStyleSheet("font-weight: 700; color: #D9EEFF;")
+            truck_label.setStyleSheet("font-size: 16px; font-weight: 700; color: #D9EEFF;")
         else:
-            truck_label.setStyleSheet("font-weight: 700; color: #0F172A;")
+            truck_label.setStyleSheet("font-size: 16px; font-weight: 700; color: #0F172A;")
         truck_info_layout.addWidget(truck_label)
 
         if str(truck.client).strip():
-            client_label = QLabel(f"Client: {truck.client.strip()}")
+            client_label = QLabel(truck.client.strip())
             client_label.setWordWrap(True)
             client_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             if self._dark_mode:
-                client_label.setStyleSheet("font-size: 10px; color: #96B5CD;")
+                client_label.setStyleSheet("font-size: 12px; color: #96B5CD;")
             else:
-                client_label.setStyleSheet("font-size: 10px; color: #475569;")
+                client_label.setStyleSheet("font-size: 12px; color: #475569;")
             truck_info_layout.addWidget(client_label)
 
         if str(truck.planned_start_date).strip():
@@ -495,15 +501,16 @@ class TruckRowWidget(QFrame):
             date_label.setWordWrap(True)
             date_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             if self._dark_mode:
-                date_label.setStyleSheet("font-size: 10px; color: #96B5CD;")
+                date_label.setStyleSheet("font-size: 12px; color: #96B5CD;")
             else:
-                date_label.setStyleSheet("font-size: 10px; color: #475569;")
+                date_label.setStyleSheet("font-size: 12px; color: #475569;")
             truck_info_layout.addWidget(date_label)
 
         truck_info_layout.addStretch(1)
         row_layout.addWidget(truck_info)
 
         active_kits = [kit for kit in sorted(truck.kits, key=lambda x: x.kit_order) if kit.is_active]
+        self._stage_boxes: list[StageDropZone] = []
         for stage in STAGE_SEQUENCE:
             stage_id = int(stage)
             stage_box = StageDropZone(
@@ -511,6 +518,7 @@ class TruckRowWidget(QFrame):
                 truck_id=self._truck_id,
                 dark_mode=self._dark_mode,
             )
+            self._stage_boxes.append(stage_box)
             stage_box.kit_dropped.connect(self.kit_stage_dropped.emit)
 
             stage_layout = QVBoxLayout(stage_box)
@@ -558,6 +566,11 @@ class TruckRowWidget(QFrame):
                 self._add_cards_flat(stage_layout, stage_kits, stage_id)
             stage_layout.addStretch(1)
             row_layout.addWidget(stage_box)
+
+    def set_column_widths(self, *, truck_width: int, stage_width: int) -> None:
+        self._truck_info.setFixedWidth(int(truck_width))
+        for stage_box in self._stage_boxes:
+            stage_box.setFixedWidth(int(stage_width))
 
     def _resolve_stage_window(self, kit: TruckKit, stage_id: int) -> tuple[float, float] | None:
         key = (self._truck_id, _normalize_kit_name(kit.kit_name), stage_id)
@@ -644,11 +657,27 @@ class TruckRowWidget(QFrame):
             baseline_windows=baseline_windows,
         )
         display_front_position = LASER_START_POSITION if not released else front_position
+        front_week = overlay_position_to_week(
+            position=display_front_position,
+            windows=baseline_windows,
+            fallback_week=float(self._current_week),
+        )
+        expected_week = None
+        if expected_position >= LASER_START_POSITION:
+            expected_week = overlay_position_to_week(
+                position=expected_position,
+                windows=baseline_windows,
+                fallback_week=float(self._current_week),
+            )
         _status_key, status_color = classify_front_status(
             released=released,
             blocked=blocked,
+            front_stage=front_stage,
             expected_position=expected_position,
             front_position=display_front_position,
+            expected_week=expected_week,
+            front_week=front_week,
+            current_week=float(self._current_week),
         )
         return status_color
 
@@ -715,6 +744,15 @@ class BoardWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        self._dark_mode = False
+        self._row_widgets: list[TruckRowWidget] = []
+        self._stage_headers: list[QLabel] = []
+        self._truck_header: QLabel | None = None
+        self._header_widget: QWidget | None = None
+        self._last_trucks: list[Truck] = []
+        self._last_hold_weeks_map: dict[int, float] = {}
+        self._last_current_week: float | None = None
+        self._last_stage_windows_map: dict[tuple[int, str, int], tuple[float, float]] = {}
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -724,7 +762,7 @@ class BoardWidget(QWidget):
 
         self._scroll_area = QScrollArea()
         self._scroll_area.setWidgetResizable(True)
-        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         self._content_widget = QWidget()
@@ -734,6 +772,49 @@ class BoardWidget(QWidget):
         self._scroll_area.setWidget(self._content_widget)
 
         root_layout.addWidget(self._scroll_area)
+        self._apply_visual_mode()
+
+    def set_dark_mode(self, dark_mode: bool) -> None:
+        updated = bool(dark_mode)
+        if self._dark_mode == updated:
+            return
+        self._dark_mode = updated
+        self._apply_visual_mode()
+        if self._last_trucks:
+            self.set_data(
+                self._last_trucks,
+                self._last_hold_weeks_map,
+                self._last_current_week,
+                self._last_stage_windows_map,
+            )
+
+    def _apply_visual_mode(self) -> None:
+        if self._dark_mode:
+            header_color = "#9CEBFF"
+            empty_color = "#88A5BA"
+            scroll_bg = "rgba(4, 15, 27, 175)"
+        else:
+            header_color = "#334155"
+            empty_color = "#64748B"
+            scroll_bg = "transparent"
+
+        if self._header_widget is not None:
+            self._header_widget.setStyleSheet("background: transparent;")
+        if self._truck_header is not None:
+            self._truck_header.setStyleSheet(f"font-weight: 700; color: {header_color};")
+        for label in self._stage_headers:
+            label.setStyleSheet(f"font-weight: 700; color: {header_color};")
+        self._scroll_area.setStyleSheet(
+            f"""
+            QScrollArea {{
+                background: {scroll_bg};
+                border: none;
+            }}
+            """
+        )
+        self._content_widget.setStyleSheet("background: transparent;")
+        for label in self.findChildren(QLabel, "board_empty_state"):
+            label.setStyleSheet(f"padding: 20px; color: {empty_color};")
 
     def set_data(
         self,
@@ -743,13 +824,22 @@ class BoardWidget(QWidget):
         kit_stage_windows_by_truck: dict[tuple[int, str, int], tuple[float, float]] | None = None,
     ) -> None:
         _clear_layout(self._content_layout)
+        self._row_widgets = []
+        self._last_trucks = list(trucks)
         hold_weeks_map = kit_release_hold_weeks_by_id or {}
         stage_windows_map = kit_stage_windows_by_truck or {}
+        self._last_hold_weeks_map = dict(hold_weeks_map)
+        self._last_current_week = current_week
+        self._last_stage_windows_map = dict(stage_windows_map)
 
         if not trucks:
             empty_label = QLabel("No trucks in flow. Use the CSV registry to add trucks.")
+            empty_label.setObjectName("board_empty_state")
             empty_label.setAlignment(Qt.AlignCenter)
-            empty_label.setStyleSheet("padding: 20px; color: #64748B;")
+            if self._dark_mode:
+                empty_label.setStyleSheet("padding: 20px; color: #88A5BA;")
+            else:
+                empty_label.setStyleSheet("padding: 20px; color: #64748B;")
             self._content_layout.addWidget(empty_label)
             self._content_layout.addStretch(1)
             return
@@ -762,23 +852,28 @@ class BoardWidget(QWidget):
                 kit_release_hold_weeks_by_id=hold_weeks_map,
                 current_week=current_week,
                 kit_stage_windows_by_truck=stage_windows_map,
+                dark_mode=self._dark_mode,
             )
+            self._row_widgets.append(row_widget)
             row_widget.kit_selected.connect(self.kit_selected.emit)
             row_widget.kit_stage_dropped.connect(self.kit_stage_drop_requested.emit)
             self._content_layout.addWidget(row_widget)
 
         self._content_layout.addStretch(1)
+        QTimer.singleShot(0, self._apply_column_widths)
 
     def _build_header(self) -> QWidget:
         header_widget = QWidget()
+        self._header_widget = header_widget
         header_layout = QHBoxLayout(header_widget)
-        header_layout.setContentsMargins(8, 0, 8, 0)
-        header_layout.setSpacing(8)
+        header_layout.setContentsMargins(BOARD_COL_MARGIN, 0, BOARD_COL_MARGIN, 0)
+        header_layout.setSpacing(BOARD_COL_SPACING)
 
-        truck_header = QLabel("TRUCK / SCHEDULE")
+        truck_header = QLabel("TRUCK")
         truck_header.setWordWrap(True)
         truck_header.setFixedWidth(TRUCK_COL_WIDTH)
         truck_header.setStyleSheet("font-weight: 700; color: #334155;")
+        self._truck_header = truck_header
         header_layout.addWidget(truck_header)
 
         for stage in STAGE_SEQUENCE:
@@ -787,6 +882,60 @@ class BoardWidget(QWidget):
             label.setFixedWidth(STAGE_COL_WIDTH)
             label.setAlignment(Qt.AlignCenter)
             label.setStyleSheet("font-weight: 700; color: #334155;")
+            self._stage_headers.append(label)
             header_layout.addWidget(label)
 
         return header_widget
+
+    def resizeEvent(self, event):  # type: ignore[override]
+        super().resizeEvent(event)
+        self._apply_column_widths()
+
+    def _apply_column_widths(self) -> None:
+        truck_header = self._truck_header
+        if truck_header is None:
+            return
+
+        stage_count = len(STAGE_SEQUENCE)
+        viewport_width = int(self._scroll_area.viewport().width())
+        if viewport_width <= 0:
+            viewport_width = int(self.width())
+        if viewport_width <= 0:
+            return
+
+        available_width = max(
+            0,
+            viewport_width - (BOARD_COL_MARGIN * 2) - (BOARD_COL_SPACING * stage_count),
+        )
+        preferred_total = TRUCK_COL_WIDTH + (STAGE_COL_WIDTH * stage_count)
+        if available_width <= 0 or preferred_total <= 0:
+            return
+
+        scale = min(1.0, float(available_width) / float(preferred_total))
+        truck_width = max(TRUCK_COL_MIN_WIDTH, min(TRUCK_COL_WIDTH, int(TRUCK_COL_WIDTH * scale)))
+        stage_width = max(STAGE_COL_MIN_WIDTH, min(STAGE_COL_WIDTH, int(STAGE_COL_WIDTH * scale)))
+
+        while (truck_width + (stage_width * stage_count)) > available_width:
+            if stage_width > STAGE_COL_MIN_WIDTH:
+                stage_width -= 1
+                continue
+            if truck_width > TRUCK_COL_MIN_WIDTH:
+                truck_width -= 1
+                continue
+            break
+
+        used_width = truck_width + (stage_width * stage_count)
+        leftover = max(0, available_width - used_width)
+        if leftover > 0 and stage_count > 0:
+            stage_growth = min(STAGE_COL_WIDTH - stage_width, leftover // stage_count)
+            if stage_growth > 0:
+                stage_width += stage_growth
+                leftover -= stage_growth * stage_count
+        if leftover > 0:
+            truck_width = min(TRUCK_COL_WIDTH, truck_width + leftover)
+
+        truck_header.setFixedWidth(int(truck_width))
+        for label in self._stage_headers:
+            label.setFixedWidth(int(stage_width))
+        for row_widget in self._row_widgets:
+            row_widget.set_column_widths(truck_width=int(truck_width), stage_width=int(stage_width))

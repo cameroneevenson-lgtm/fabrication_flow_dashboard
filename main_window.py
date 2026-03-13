@@ -44,7 +44,13 @@ from PySide6.QtWidgets import (
 
 from board_widget import BoardWidget
 from database import FabricationDatabase
-from gantt_overlay import OverlayRow, build_overlay_rows, compute_overlay_viewport, render_overlay_png
+from gantt_overlay import (
+    OverlayRow,
+    build_overlay_rows,
+    compute_overlay_viewport,
+    normalize_overlay_row_labels,
+    render_overlay_png,
+)
 from metrics import (
     DashboardMetrics,
     compute_snapshot_metrics,
@@ -79,6 +85,8 @@ TEMP_SHAREPOINT_GANTT_URL = (
     "https://battleshield.sharepoint.com/:i:/s/Manufacturing/"
     "IQAfDZ1FNL9XRJsZlW0ChNbmASchzlcjFwEi_Il1vDF8Xjw?e=u0g8py"
 )
+SIGNAL_TILE_HEIGHT = 136
+SIGNAL_TILE_DETAIL_HEIGHT = 30
 
 
 def _fmt_week(value: float) -> str:
@@ -1088,6 +1096,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_status_label"):
             self._status_label.setStyleSheet(f"color: {status_color};")
 
+        if hasattr(self, "_board_widget"):
+            self._board_widget.set_dark_mode(dark)
+
         if hasattr(self, "_attention_panel"):
             self._attention_panel.setStyleSheet(panel_style)
         if hasattr(self, "_attention_title_label"):
@@ -1480,6 +1491,7 @@ class MainWindow(QMainWindow):
         gantt_tabs.setDocumentMode(True)
         gantt_tabs.setUsesScrollButtons(True)
         gantt_tabs.setMovable(False)
+        gantt_tabs.currentChanged.connect(self._handle_gantt_tab_changed)
         self._gantt_tabs = gantt_tabs
         layout.addWidget(gantt_tabs, 1)
 
@@ -1490,6 +1502,10 @@ class MainWindow(QMainWindow):
 
         return panel
 
+    def _handle_gantt_tab_changed(self, _index: int) -> None:
+        self._rescale_gantt_pixmaps()
+        self._queue_gantt_pane_autosize()
+
     def _create_gantt_context(self) -> dict[str, object]:
         content = QWidget()
         content_layout = QVBoxLayout(content)
@@ -1499,6 +1515,7 @@ class MainWindow(QMainWindow):
         meta_label = QLabel("")
         meta_label.setWordWrap(True)
         meta_label.setStyleSheet("font-size: 11px; color: #475569;")
+        meta_label.setVisible(False)
         content_layout.addWidget(meta_label)
 
         chart_scroll = QScrollArea()
@@ -1623,7 +1640,7 @@ class MainWindow(QMainWindow):
         current_monday = today - timedelta(days=today.weekday())
         delta_days = (float(week_value) - float(current_week)) * 7.0
         target_date = current_monday + timedelta(days=delta_days)
-        return target_date.strftime("%b %d, %Y")
+        return target_date.strftime("%m/%d/%y")
 
     def _set_gantt_message(self, context: dict[str, object], message: str) -> None:
         chart_label = context["chart_label"]
@@ -1657,8 +1674,10 @@ class MainWindow(QMainWindow):
 
     def _apply_queued_gantt_pane_autosize(self) -> None:
         self._gantt_autosize_pending = False
+        self._rescale_gantt_pixmaps()
         self._autosize_gantt_pane_to_content()
         self._rescale_gantt_pixmaps()
+        self._autosize_gantt_pane_to_content()
 
     @staticmethod
     def _gantt_content_size(context: dict[str, object]) -> tuple[int, int]:
@@ -1667,9 +1686,9 @@ class MainWindow(QMainWindow):
         table = context["table"]
 
         if chart_scroll.isVisible():
-            pixmap = chart_label.pixmap()
-            content_width = int(pixmap.width()) if pixmap is not None and not pixmap.isNull() else int(chart_label.sizeHint().width())
-            content_height = int(pixmap.height()) if pixmap is not None and not pixmap.isNull() else int(chart_label.sizeHint().height())
+            label_size = chart_label.minimumSize()
+            content_width = int(label_size.width()) if label_size.isValid() else int(chart_label.sizeHint().width())
+            content_height = int(label_size.height()) if label_size.isValid() else int(chart_label.sizeHint().height())
             frame = int(chart_scroll.frameWidth()) * 2
             return (content_width + frame, content_height + frame)
 
@@ -1692,6 +1711,7 @@ class MainWindow(QMainWindow):
         splitter = getattr(self, "_board_gantt_splitter", None)
         main_splitter = getattr(self, "_main_splitter", None)
         right_column = getattr(self, "_right_column", None)
+        tabs = getattr(self, "_gantt_tabs", None)
         if splitter is None or main_splitter is None or right_column is None:
             return
 
@@ -1714,44 +1734,94 @@ class MainWindow(QMainWindow):
         margins = layout.contentsMargins()
         chrome_height = int(margins.top() + margins.bottom())
         chrome_width = int(margins.left() + margins.right())
+        content_pad = 8
         max_header_width = 0
-        header_count = 0
         if hasattr(self, "_gantt_title_label") and self._gantt_title_label.isVisible():
             chrome_height += int(self._gantt_title_label.sizeHint().height())
             max_header_width = max(max_header_width, int(self._gantt_title_label.sizeHint().width()))
-            header_count += 1
+            if tabs is not None and tabs.isVisible():
+                chrome_height += int(layout.spacing())
         if meta_label.isVisible():
             chrome_height += int(meta_label.sizeHint().height())
             max_header_width = max(max_header_width, int(meta_label.sizeHint().width()))
-            header_count += 1
-        if header_count > 0:
-            chrome_height += int(layout.spacing()) * header_count
+            chrome_height += int(context["widget"].layout().spacing())
+        if tabs is not None and tabs.isVisible():
+            tab_bar = tabs.tabBar()
+            if tab_bar is not None and tab_bar.isVisible():
+                chrome_height += int(tab_bar.sizeHint().height())
+
+        autosize_signature = getattr(self, "_gantt_autosize_signature", None)
+        main_sizes = main_splitter.sizes()
+        main_handle = max(0, int(main_splitter.handleWidth()))
+        handle = max(0, int(splitter.handleWidth()))
+        min_board = 120
+        splitter_sizes = splitter.sizes()
+
+        cached_signature = getattr(self, "_gantt_locked_signature", None)
+        cached_total_width = int(getattr(self, "_gantt_locked_total_width", -1))
+        cached_total_height = int(getattr(self, "_gantt_locked_total_height", -1))
+        cached_left = int(getattr(self, "_gantt_locked_left_width", 0))
+        cached_gantt = int(getattr(self, "_gantt_locked_height", 0))
+
+        if (
+            autosize_signature is not None
+            and autosize_signature == cached_signature
+            and total_width == cached_total_width
+            and total_height == cached_total_height
+            and cached_left > 0
+            and cached_gantt > 0
+        ):
+            target_left = cached_left
+            target_right = max(0, total_width - target_left - main_handle)
+            if len(main_sizes) >= 2:
+                if abs(int(main_sizes[0]) - int(target_left)) > 1 or abs(int(main_sizes[1]) - int(target_right)) > 1:
+                    main_splitter.setSizes([target_left, target_right])
+
+            target_gantt = min(cached_gantt, max(0, total_height - min_board - handle))
+            target_board = max(min_board, total_height - target_gantt - handle)
+            if len(splitter_sizes) >= 2 and (
+                abs(int(splitter_sizes[0]) - int(target_board)) > 1
+                or abs(int(splitter_sizes[1]) - int(target_gantt)) > 1
+            ):
+                splitter.setSizes([target_board, target_gantt])
+            return
 
         desired_left = max(
             900,
             max_header_width + chrome_width,
-            content_width + chrome_width,
+            content_width + chrome_width + content_pad,
         )
-        right_min_width = max(260, int(right_column.minimumSizeHint().width()), int(right_column.sizeHint().width()))
-        main_handle = max(0, int(main_splitter.handleWidth()))
-        max_left = max(0, total_width - right_min_width - main_handle)
+        cached_right_reserve = int(getattr(self, "_gantt_locked_right_width", 0))
+        if cached_right_reserve <= 0:
+            current_right_width = int(main_sizes[1]) if len(main_sizes) >= 2 else 0
+            cached_right_reserve = max(
+                260,
+                current_right_width,
+                int(right_column.minimumSizeHint().width()),
+            )
+            self._gantt_locked_right_width = cached_right_reserve
+        max_left = max(0, total_width - cached_right_reserve - main_handle)
         target_left = max(0, min(desired_left, max_left if max_left > 0 else desired_left))
         target_right = max(0, total_width - target_left - main_handle)
-        main_sizes = main_splitter.sizes()
         if len(main_sizes) >= 2:
             if abs(int(main_sizes[0]) - int(target_left)) > 1 or abs(int(main_sizes[1]) - int(target_right)) > 1:
                 main_splitter.setSizes([target_left, target_right])
 
-        handle = max(0, int(splitter.handleWidth()))
-        min_board = 120
-        desired = max(0, int(content_height) + chrome_height)
+        desired = max(0, int(content_height) + chrome_height + content_pad)
         max_gantt = max(0, total_height - min_board - handle)
         target_gantt = min(desired, max_gantt)
         target_board = max(min_board, total_height - target_gantt - handle)
-        sizes = splitter.sizes()
-        if len(sizes) >= 2 and abs(int(sizes[1]) - int(target_gantt)) <= 1:
-            return
-        splitter.setSizes([target_board, target_gantt])
+        if len(splitter_sizes) >= 2 and (
+            abs(int(splitter_sizes[0]) - int(target_board)) > 1
+            or abs(int(splitter_sizes[1]) - int(target_gantt)) > 1
+        ):
+            splitter.setSizes([target_board, target_gantt])
+
+        self._gantt_locked_signature = autosize_signature
+        self._gantt_locked_total_width = total_width
+        self._gantt_locked_total_height = total_height
+        self._gantt_locked_left_width = target_left
+        self._gantt_locked_height = target_gantt
 
     def _render_gantt_chart_png(
         self,
@@ -1775,8 +1845,9 @@ class MainWindow(QMainWindow):
             fig_height_per_row=0.24 if is_per_truck else 0.13,
             y_label_size=6.0,
             x_label_size=6.0,
-            x_label_text="Week of",
+            x_label_text="",
             legend_size=7.0,
+            dark_mode=bool(self._minority_report_mode),
         )
 
     def _render_hi_res_gantt_chart_png(
@@ -1800,8 +1871,9 @@ class MainWindow(QMainWindow):
             fig_height_per_row=0.16,
             y_label_size=7.0,
             x_label_size=7.0,
-            x_label_text="Week of",
+            x_label_text="",
             legend_size=8.0,
+            dark_mode=bool(self._minority_report_mode),
         )
 
     @staticmethod
@@ -1812,24 +1884,59 @@ class MainWindow(QMainWindow):
             viewport_width = int(chart_scroll.width()) - (int(chart_scroll.frameWidth()) * 2)
         return max(1, viewport_width - 4)
 
+    def _gantt_shared_width(self) -> int:
+        tabs = getattr(self, "_gantt_tabs", None)
+        if tabs is not None:
+            pane_width = int(tabs.contentsRect().width())
+            if pane_width > 8:
+                return max(1, pane_width - 8)
+        return 0
+
+    def _gantt_reference_width(self, context: dict[str, object]) -> int:
+        shared_width = self._gantt_shared_width()
+        if shared_width > 1:
+            return shared_width
+        return self._gantt_target_width(context)
+
+    def _gantt_shared_canvas_size(self) -> tuple[int, int] | None:
+        master_context = getattr(self, "_gantt_context", None)
+        if not isinstance(master_context, dict):
+            return None
+        source_pixmap = master_context.get("source_pixmap")
+        if not isinstance(source_pixmap, QPixmap) or source_pixmap.isNull():
+            return None
+        target_width = self._gantt_reference_width(master_context)
+        if target_width <= 1:
+            return None
+        if source_pixmap.width() > target_width:
+            fitted = source_pixmap.scaledToWidth(target_width, Qt.SmoothTransformation)
+        else:
+            fitted = source_pixmap
+        return (int(fitted.width()), int(fitted.height()))
+
     def _set_context_pixmap(self, context: dict[str, object], pixmap: QPixmap) -> None:
         chart_label = context["chart_label"]
-        target_width = self._gantt_target_width(context)
+        target_width = self._gantt_reference_width(context)
         if not pixmap.isNull() and pixmap.width() > target_width:
             fitted = pixmap.scaledToWidth(target_width, Qt.SmoothTransformation)
         else:
             fitted = pixmap
+        canvas_size = self._gantt_shared_canvas_size()
+        if canvas_size is None:
+            canvas_width = int(fitted.width())
+            canvas_height = int(fitted.height())
+        else:
+            canvas_width, canvas_height = canvas_size
+            canvas_width = max(canvas_width, int(fitted.width()))
+            canvas_height = max(canvas_height, int(fitted.height()))
         chart_label.setPixmap(fitted)
-        chart_label.resize(fitted.size())
-        chart_label.setMinimumSize(fitted.size())
+        chart_label.resize(canvas_width, canvas_height)
+        chart_label.setMinimumSize(canvas_width, canvas_height)
 
     def _rescale_gantt_pixmaps(self) -> None:
         for context in getattr(self, "_gantt_contexts", {}).values():
             source_pixmap = context.get("source_pixmap")
-            chart_scroll = context.get("chart_scroll")
             if not isinstance(source_pixmap, QPixmap):
-                continue
-            if chart_scroll is None or not chart_scroll.isVisible():
                 continue
             self._set_context_pixmap(context, source_pixmap)
 
@@ -1841,13 +1948,10 @@ class MainWindow(QMainWindow):
         current_week: float,
         min_week: float,
         max_week: float,
-        meta_text: str,
         is_per_truck: bool,
         empty_message: str,
     ) -> None:
-        context["meta_label"].setText(meta_text)
         if not rows:
-            context["meta_label"].setText(empty_message)
             self._set_gantt_message(context, empty_message)
             return
 
@@ -1934,14 +2038,24 @@ class MainWindow(QMainWindow):
             return
 
         insights = self._schedule_insights
-        current_label = self._week_value_to_date_label(insights.current_week, insights.current_week)
         current_week = float(insights.current_week)
         self._sync_gantt_tabs()
+        previous_signature = getattr(self, "_gantt_locked_signature", None)
+        previous_total_width = int(getattr(self, "_gantt_locked_total_width", -1))
+        previous_total_height = int(getattr(self, "_gantt_locked_total_height", -1))
 
         rows = build_overlay_rows(
             trucks=list(self._trucks),
             schedule_insights=insights,
             max_rows=max(1, len(self._trucks) * 8),
+        )
+        parsed_labels = [str(row.row_label or "").split(" | ", 1) for row in rows]
+        shared_truck_width = max((len(parts[0].rstrip()) for parts in parsed_labels if parts), default=0)
+        shared_kit_width = max((len(parts[1].rstrip()) for parts in parsed_labels if len(parts) > 1), default=0)
+        rows = normalize_overlay_row_labels(
+            rows,
+            truck_width=shared_truck_width,
+            kit_width=shared_kit_width,
         )
         min_week, max_week = compute_overlay_viewport(
             rows=rows,
@@ -1949,13 +2063,17 @@ class MainWindow(QMainWindow):
             forward_horizon_weeks=8.0,
             side_padding_weeks=0.35,
         )
+        self._gantt_autosize_signature = (
+            round(float(min_week), 4),
+            round(float(max_week), 4),
+            len(rows),
+        )
         self._populate_gantt_context(
             context=self._gantt_context,
             rows=rows,
             current_week=current_week,
             min_week=min_week,
             max_week=max_week,
-            meta_text=f"Week of {current_label}",
             is_per_truck=False,
             empty_message="No gantt data.",
         )
@@ -1970,16 +2088,33 @@ class MainWindow(QMainWindow):
                 schedule_insights=insights,
                 max_rows=max(1, len([kit for kit in truck.kits if kit.is_active]) * 4),
             )
+            truck_rows = normalize_overlay_row_labels(
+                truck_rows,
+                truck_width=shared_truck_width,
+                kit_width=shared_kit_width,
+            )
             self._populate_gantt_context(
                 context=context,
                 rows=truck_rows,
                 current_week=current_week,
                 min_week=min_week,
                 max_week=max_week,
-                meta_text=f"{truck.truck_number} | Week of {current_label}",
                 is_per_truck=True,
                 empty_message=f"{truck.truck_number} has no gantt rows.",
             )
+        splitter = getattr(self, "_board_gantt_splitter", None)
+        main_splitter = getattr(self, "_main_splitter", None)
+        total_height = int(splitter.height()) if splitter is not None else -1
+        total_width = int(main_splitter.width()) if main_splitter is not None else -1
+        if (
+            self._gantt_autosize_signature == previous_signature
+            and total_width == previous_total_width
+            and total_height == previous_total_height
+            and int(getattr(self, "_gantt_locked_left_width", 0)) > 0
+            and int(getattr(self, "_gantt_locked_height", 0)) > 0
+        ):
+            self._rescale_gantt_pixmaps()
+            return
         self._queue_gantt_pane_autosize()
 
     def _create_tile(self, title: str) -> dict[str, QWidget]:
@@ -1994,7 +2129,7 @@ class MainWindow(QMainWindow):
             }
             """
         )
-        frame.setMinimumHeight(100)
+        frame.setFixedHeight(SIGNAL_TILE_HEIGHT)
 
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(10, 8, 10, 8)
@@ -2060,6 +2195,7 @@ class MainWindow(QMainWindow):
         detail_label.setWordWrap(True)
         detail_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         detail_label.setStyleSheet("font-size: 11px; color: #475569;")
+        detail_label.setFixedHeight(SIGNAL_TILE_DETAIL_HEIGHT)
         layout.addWidget(detail_label)
 
         layout.addStretch(1)
