@@ -2,8 +2,10 @@
 
 import sys
 import os
+import ctypes
 from pathlib import Path
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from database import FabricationDatabase
@@ -22,13 +24,23 @@ def _place_window_on_second_screen(app: QApplication, window: MainWindow) -> Non
         handle.setScreen(target_screen)
 
     geometry = target_screen.availableGeometry()
-    width = min(window.width(), geometry.width())
-    height = min(window.height(), geometry.height())
-    window.resize(width, height)
+    window.setFixedSize(geometry.size())
+    window.move(geometry.topLeft())
 
-    x = geometry.x() + max(0, (geometry.width() - width) // 2)
-    y = geometry.y() + max(0, (geometry.height() - height) // 2)
-    window.move(x, y)
+
+def _bring_window_to_front(window: MainWindow) -> None:
+    window.raise_()
+    window.activateWindow()
+    try:
+        hwnd = int(window.winId())
+        if hwnd:
+            user32 = ctypes.windll.user32
+            SW_RESTORE = 9
+            user32.ShowWindow(hwnd, SW_RESTORE)
+            user32.SetForegroundWindow(hwnd)
+    except Exception:
+        # Best-effort focus; Qt raise/activate above is still applied.
+        pass
 
 
 def main() -> int:
@@ -51,7 +63,8 @@ def main() -> int:
     )
     window.show()
     _place_window_on_second_screen(app, window)
-    window.showFullScreen()
+    _bring_window_to_front(window)
+    QTimer.singleShot(120, lambda: _bring_window_to_front(window))
 
     return app.exec()
 

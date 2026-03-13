@@ -11,6 +11,24 @@ class Stage(IntEnum):
     COMPLETE = 50
 
 
+class FabricationPosition(IntEnum):
+    LASER_10 = 10
+    LASER_12 = 12
+    LASER_14 = 14
+    LASER_16 = 16
+    LASER_18 = 18
+    BEND_20 = 20
+    BEND_22 = 22
+    BEND_24 = 24
+    BEND_26 = 26
+    BEND_28 = 28
+    WELD_30 = 30
+    WELD_32 = 32
+    WELD_34 = 34
+    WELD_36 = 36
+    WELD_38 = 38
+
+
 STAGE_INFO: dict[Stage, dict[str, str]] = {
     Stage.RELEASE: {"key": "release", "label": "Release"},
     Stage.LASER: {"key": "laser", "label": "Laser"},
@@ -33,6 +51,34 @@ STAGE_KEY_TO_STAGE: dict[str, Stage] = {
 
 UPSTREAM_STAGES: tuple[Stage, ...] = (Stage.RELEASE, Stage.LASER, Stage.BEND)
 FABRICATION_STAGES: tuple[Stage, ...] = (Stage.LASER, Stage.BEND, Stage.WELD)
+FABRICATION_STAGE_POSITION_SCALE: dict[Stage, tuple[int, ...]] = {
+    Stage.LASER: (
+        int(FabricationPosition.LASER_10),
+        int(FabricationPosition.LASER_12),
+        int(FabricationPosition.LASER_14),
+        int(FabricationPosition.LASER_16),
+        int(FabricationPosition.LASER_18),
+    ),
+    Stage.BEND: (
+        int(FabricationPosition.BEND_20),
+        int(FabricationPosition.BEND_22),
+        int(FabricationPosition.BEND_24),
+        int(FabricationPosition.BEND_26),
+        int(FabricationPosition.BEND_28),
+    ),
+    Stage.WELD: (
+        int(FabricationPosition.WELD_30),
+        int(FabricationPosition.WELD_32),
+        int(FabricationPosition.WELD_34),
+        int(FabricationPosition.WELD_36),
+        int(FabricationPosition.WELD_38),
+    ),
+}
+FABRICATION_ALLOWED_POSITIONS: tuple[int, ...] = (
+    FABRICATION_STAGE_POSITION_SCALE[Stage.LASER]
+    + FABRICATION_STAGE_POSITION_SCALE[Stage.BEND]
+    + FABRICATION_STAGE_POSITION_SCALE[Stage.WELD]
+)
 
 
 def stage_from_id(value: int | Stage | None, fallback: Stage = Stage.RELEASE) -> Stage:

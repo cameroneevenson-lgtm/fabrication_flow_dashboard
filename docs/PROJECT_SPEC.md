@@ -1,7 +1,7 @@
 # Fabrication Flow Dashboard - Project Specification
 
 ## 1. Purpose
-This project is an operations dashboard for tracking fabrication status by truck and kit, with schedule-aware visualization and Teams publishing.
+This project is the Fabrication Flow Dashboard for tracking fabrication status by truck and kit, with schedule-aware visualization and Teams publishing.
 
 Primary goals:
 - Keep a live board of active truck kits by stage.
@@ -30,7 +30,8 @@ Out of scope:
 - `database.py`: SQLite schema lifecycle and CRUD operations.
 - `schedule.py`: schedule insights generation from config + live truck state.
 - `metrics.py`: health/risk metrics and attention signal computation.
-- `teams_card.py`: Teams Adaptive Card payload builders (dashboard + gantt-only).
+- `teams_card.py`: Teams Adaptive Card payload builders (compact dashboard + gantt-only).
+- `publish_artifacts.py`: published artifact generation (`summary.html`, `gantt.png`, `status.json`) and link resolution.
 - `truck_registry.py`: CSV parsing and sync orchestration.
 
 ## 3.2 Data Sources
@@ -113,20 +114,53 @@ A kit row is rendered only when all are true:
 ## 7.1 Payload Constraints
 - Project target cap: `28,000` bytes per webhook payload.
 - Gantt image compression cap: `18,000` bytes (PNG) before fallback.
+- Dashboard card is intentionally compact and avoids large embedded detail blocks.
 
-## 7.2 Degradation Strategy
+## 7.2 Compact Dashboard Card Shape
+The dashboard webhook payload is a summary shell:
+- Header:
+  - `Fabrication Status`
+  - published timestamp
+  - `Confirmed published snapshot`
+- Top summary facts:
+  - Active Trucks
+  - Next Main Kit Released
+  - Bend Buffer
+  - Weld Feed
+  - Kits Behind Schedule
+  - Blocked Kits
+- Risk summary:
+  - top-priority attention items only
+- Per-truck summary:
+  - compact rows (`truck`, `main stage`, `sync`, short issue)
+  - capped row count to stay small
+- Actions:
+  - `Action.OpenUrl` only
+  - links for full dashboard, gantt snapshot, published JSON
+
+## 7.3 Publish Order
+Dashboard publish follows this sequence:
+1. Generate/update published artifacts.
+2. Resolve/confirm artifact links (SharePoint URLs preferred).
+3. Build compact Adaptive Card payload.
+4. POST payload to the Teams Incoming Webhook.
+
+## 7.4 Degradation Strategy
 For gantt-only publish:
 - Try higher row counts first with image.
 - Then reduce row count and/or disable image until size fits.
 - Keep smallest viable fallback payload if no candidate fits.
 
-For dashboard publish:
-- Reduce truck rows progressively until payload fits.
+For compact dashboard publish:
+- Reduce per-truck row count progressively until payload fits.
 
-## 7.3 Output Artifacts
+## 7.5 Output Artifacts
 Generated payloads are written to:
 - `_runtime/teams_dashboard_card.json`
 - `_runtime/teams_gantt_only_card.json`
+- `_runtime/published/summary.html`
+- `_runtime/published/gantt.png` (if image extraction succeeds)
+- `_runtime/published/status.json`
 
 ## 8. Configuration
 `schedule_config.json` controls:
@@ -134,6 +168,16 @@ Generated payloads are written to:
 - Kit lag/duration defaults.
 - Per-kit operation windows.
 - Operation standards and cycle settings.
+
+Teams artifact link resolution supports:
+- `_runtime/published_artifact_links.json` keys:
+  - `summary_html_url`
+  - `gantt_png_url`
+  - `status_json_url`
+- Environment variable overrides:
+  - `FABRICATION_FLOW_SUMMARY_HTML_URL`
+  - `FABRICATION_FLOW_GANTT_PNG_URL`
+  - `FABRICATION_FLOW_STATUS_JSON_URL`
 
 ## 9. Operational Notes
 - This project currently uses a local-first architecture; runtime files under `_runtime` are operational artifacts and may change frequently.

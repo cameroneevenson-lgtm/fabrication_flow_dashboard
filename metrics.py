@@ -1,29 +1,27 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from models import Truck, TruckKit
 from schedule import ScheduleInsights, build_schedule_insights
-from stages import Stage, stage_from_id, stage_label
+from stages import FABRICATION_STAGE_POSITION_SCALE, Stage, stage_from_id, stage_label
 
-
-@dataclass
-class NextMainKitRisk:
-    is_warning: bool
-    message: str
+WELD_FEED_B_KIT_NAMES = {"console", "interior", "exterior"}
 
 
 @dataclass
 class BendBufferHealth:
     kit_count: int
     level: str
+    drivers: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass
 class WeldFeedStatus:
     score: float
     level: str
+    drivers: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass
@@ -35,53 +33,34 @@ class AttentionItem:
 
 @dataclass
 class DashboardMetrics:
-    next_main_kit_risk: NextMainKitRisk
+    laser_buffer: BendBufferHealth
     bend_buffer: BendBufferHealth
-    weld_feed: WeldFeedStatus
+    weld_feed_a: WeldFeedStatus
+    weld_feed_b: WeldFeedStatus
     attention_items: list[AttentionItem]
 
 
 @dataclass
-class BossTile:
-    key: str
-    label: str
-    value: str
-    detail: str
-    tone: str
-
-
-@dataclass
-class BossSyncSummary:
+class SnapshotSyncSummary:
     ahead_kits: int
     in_sync_kits: int
     behind_kits: int
 
 
 @dataclass
-class BossReleaseSummary:
-    summary: str
-    late_releases: int
-    next_main_released: bool
-
-
-@dataclass
-class BossTruckRow:
+class SnapshotTruckRow:
     truck_number: str
     main_stage: str
     sync_status: str
-    main_released: str
     risk_category: str
     issue_summary: str
     tone: str
 
 
 @dataclass
-class BossLensMetrics:
-    tiles: list[BossTile]
-    sync_summary: BossSyncSummary
-    release_summary: BossReleaseSummary
-    flow_summary: str
-    truck_rows: list[BossTruckRow]
+class SnapshotMetrics:
+    sync_summary: SnapshotSyncSummary
+    truck_rows: list[SnapshotTruckRow]
 
 
 def sort_trucks_natural(trucks: list[Truck]) -> list[Truck]:
@@ -109,32 +88,32 @@ def compute_dashboard_metrics(
     ordered_trucks = sort_trucks_natural(trucks)
     insights = schedule_insights or build_schedule_insights(ordered_trucks)
 
-    next_main_kit_risk = _compute_next_main_kit_risk(ordered_trucks)
+    laser_buffer = _compute_laser_buffer(ordered_trucks)
     bend_buffer = _compute_bend_buffer(ordered_trucks)
-    weld_feed = _compute_weld_feed(ordered_trucks)
+    weld_feed_a = _compute_weld_feed_a(ordered_trucks)
+    weld_feed_b = _compute_weld_feed(ordered_trucks, feed="b")
     attention_items = _build_attention_items(
-        next_main_kit_risk=next_main_kit_risk,
         bend_buffer=bend_buffer,
-        weld_feed=weld_feed,
         schedule_insights=insights,
     )
 
     return DashboardMetrics(
-        next_main_kit_risk=next_main_kit_risk,
+        laser_buffer=laser_buffer,
         bend_buffer=bend_buffer,
-        weld_feed=weld_feed,
+        weld_feed_a=weld_feed_a,
+        weld_feed_b=weld_feed_b,
         attention_items=attention_items,
     )
 
 
-def compute_boss_lens_metrics(
+def compute_snapshot_metrics(
     trucks: list[Truck],
     schedule_insights: ScheduleInsights | None = None,
     dashboard_metrics: DashboardMetrics | None = None,
-) -> BossLensMetrics:
+) -> SnapshotMetrics:
     ordered_trucks = sort_trucks_natural(trucks)
     insights = schedule_insights or build_schedule_insights(ordered_trucks)
-    metrics = dashboard_metrics or compute_dashboard_metrics(ordered_trucks, schedule_insights=insights)
+    _metrics = dashboard_metrics or compute_dashboard_metrics(ordered_trucks, schedule_insights=insights)
 
     hold_count_by_truck: dict[str, int] = {}
     for item in insights.release_hold_items:
@@ -161,8 +140,7 @@ def compute_boss_lens_metrics(
     behind_kits = 0
     ahead_kits = 0
     in_sync_kits = 0
-    blocked_kits = 0
-    truck_rows: list[BossTruckRow] = []
+    truck_rows: list[SnapshotTruckRow] = []
 
     for truck in ordered_trucks:
         truck_id = truck.id
@@ -173,13 +151,11 @@ def compute_boss_lens_metrics(
         main_sync_status = "In Sync"
         main_kit = _find_main_body_kit(truck)
         main_stage = "-"
-        main_released = "No"
 
         for kit in truck.kits:
             if not kit.is_active:
                 continue
             if str(kit.blocker or "").strip():
-                blocked_kits += 1
                 truck_blocked_count += 1
 
             expected_stage = _expected_stage_for_kit(
@@ -207,11 +183,6 @@ def compute_boss_lens_metrics(
 
         if main_kit:
             main_stage = stage_label(main_kit.front_stage_id)
-            released = (
-                main_kit.release_state == "released"
-                or stage_from_id(main_kit.front_stage_id) > Stage.RELEASE
-            )
-            main_released = "Yes" if released else "No"
 
         late_release_count = hold_count_by_truck.get(truck.truck_number, 0)
         overlap_open_count = concurrency_by_truck.get(truck.truck_number, 0)
@@ -238,98 +209,21 @@ def compute_boss_lens_metrics(
             tone = "ok"
 
         truck_rows.append(
-            BossTruckRow(
+            SnapshotTruckRow(
                 truck_number=truck.truck_number,
                 main_stage=main_stage,
                 sync_status=main_sync_status,
-                main_released=main_released,
                 risk_category=risk_category,
                 issue_summary=issue_summary,
                 tone=tone,
             )
         )
 
-    late_releases = len(insights.release_hold_items)
-    next_main_released = not metrics.next_main_kit_risk.is_warning
-
-    release_bits: list[str] = []
-    if late_releases > 0:
-        release_bits.append(f"{late_releases} kit(s) late release")
-    if not next_main_released:
-        release_bits.append("next truck body not released")
-    release_summary_text = "Main kit release on time." if not release_bits else "; ".join(release_bits) + "."
-
-    bend_health = metrics.bend_buffer.level.upper()
-    weld_health = metrics.weld_feed.level.upper()
-    active_trucks = len(ordered_trucks)
-
-    tiles = [
-        BossTile(
-            key="active_trucks",
-            label="Active Trucks",
-            value=str(active_trucks),
-            detail="Current trucks in active flow.",
-            tone="ok" if active_trucks > 0 else "caution",
-        ),
-        BossTile(
-            key="next_main_released",
-            label="Next Main Kit Released",
-            value="Yes" if next_main_released else "No",
-            detail=metrics.next_main_kit_risk.message,
-            tone="ok" if next_main_released else "problem",
-        ),
-        BossTile(
-            key="bend_buffer",
-            label="Bend Buffer Health",
-            value=bend_health,
-            detail="3+ released kits in laser/bend is healthy.",
-            tone=_tone_for_buffer(metrics.bend_buffer.level),
-        ),
-        BossTile(
-            key="weld_feed",
-            label="Weld Feed Health",
-            value=weld_health,
-            detail="Flow readiness from bend into weld.",
-            tone=_tone_for_weld(metrics.weld_feed.level),
-        ),
-        BossTile(
-            key="behind_kits",
-            label="Kits Behind Master Schedule",
-            value=str(behind_kits),
-            detail="Compared to fixed schedule baseline.",
-            tone=_tone_for_count(behind_kits),
-        ),
-        BossTile(
-            key="late_releases",
-            label="Late Releases",
-            value=str(late_releases),
-            detail="Kits still not released past planned start.",
-            tone=_tone_for_count(late_releases),
-        ),
-        BossTile(
-            key="blocked_kits",
-            label="Blocked Kits",
-            value=str(blocked_kits),
-            detail="Kits with blocker text present.",
-            tone=_tone_for_count(blocked_kits),
-        ),
-    ]
-
-    return BossLensMetrics(
-        tiles=tiles,
-        sync_summary=BossSyncSummary(
+    return SnapshotMetrics(
+        sync_summary=SnapshotSyncSummary(
             ahead_kits=ahead_kits,
             in_sync_kits=in_sync_kits,
             behind_kits=behind_kits,
-        ),
-        release_summary=BossReleaseSummary(
-            summary=release_summary_text,
-            late_releases=late_releases,
-            next_main_released=next_main_released,
-        ),
-        flow_summary=(
-            f"Bend Buffer={bend_health} | Weld Feed={weld_health} | "
-            f"Active Trucks={active_trucks} | Blocked Kits={blocked_kits}"
         ),
         truck_rows=truck_rows,
     )
@@ -342,6 +236,15 @@ def _find_main_body_kit(truck: Truck) -> TruckKit | None:
         if kit.is_main_kit or kit.kit_name.lower() == "body":
             return kit
     return None
+
+
+def _driver_label(truck: Truck, kit: TruckKit, note: str | None = None) -> str:
+    truck_number = str(truck.truck_number or "").strip()
+    kit_name = str(kit.kit_name or "").strip()
+    base = f"{truck_number} {kit_name}".strip()
+    if note:
+        return f"{base} ({note})"
+    return base
 
 
 def _stage_index(value: int | Stage) -> int:
@@ -411,56 +314,11 @@ def _expected_stage_for_kit(
     return expected
 
 
-def _tone_for_count(value: int) -> str:
-    if value <= 0:
-        return "ok"
-    if value <= 2:
-        return "caution"
-    return "problem"
-
-
-def _tone_for_buffer(level: str) -> str:
-    if level == "healthy":
-        return "ok"
-    if level == "low":
-        return "caution"
-    return "problem"
-
-
-def _tone_for_weld(level: str) -> str:
-    if level == "healthy":
-        return "ok"
-    if level == "watch":
-        return "caution"
-    return "problem"
-
-
-def _compute_next_main_kit_risk(trucks: list[Truck]) -> NextMainKitRisk:
-    if len(trucks) < 2:
-        return NextMainKitRisk(is_warning=False, message="Not enough trucks in flow.")
-
-    for index in range(len(trucks) - 1):
-        current_truck = trucks[index]
-        next_truck = trucks[index + 1]
-        current_main_kit = _find_main_body_kit(current_truck)
-        next_main_kit = _find_main_body_kit(next_truck)
-
-        if not current_main_kit or not next_main_kit:
-            continue
-
-        current_front = stage_from_id(current_main_kit.front_stage_id)
-        if current_front == Stage.WELD and next_main_kit.release_state != "released":
-            return NextMainKitRisk(
-                is_warning=True,
-                message=f"{next_truck.truck_number} Body is {next_main_kit.release_state.replace('_', ' ')}.",
-            )
-
-    return NextMainKitRisk(is_warning=False, message="Next Body release is aligned.")
-
-
 def _compute_bend_buffer(trucks: list[Truck]) -> BendBufferHealth:
     front_buffer_count = 0
     has_body_tail_in_buffer = False
+    front_drivers: list[str] = []
+    tail_driver = ""
 
     for truck in trucks:
         for kit in truck.kits:
@@ -473,53 +331,228 @@ def _compute_bend_buffer(trucks: list[Truck]) -> BendBufferHealth:
             front_stage = stage_from_id(kit.front_stage_id)
             if front_stage in {Stage.LASER, Stage.BEND}:
                 front_buffer_count += 1
+                front_drivers.append(_driver_label(truck, kit))
 
             if is_body:
                 back_stage = stage_from_id(kit.back_stage_id)
                 if back_stage in {Stage.LASER, Stage.BEND}:
                     has_body_tail_in_buffer = True
+                    if not tail_driver:
+                        tail_driver = _driver_label(truck, kit, "tail")
 
     if front_buffer_count >= 3:
         count = front_buffer_count
         level = "healthy"
+        drivers = tuple(front_drivers)
     elif front_buffer_count > 0:
         count = front_buffer_count
         level = "low"
+        drivers = tuple(front_drivers)
     elif has_body_tail_in_buffer:
         # Prevent a hard "dry" signal when the body tail is still feeding laser/bend.
         count = 1
         level = "low"
+        drivers = (tail_driver,) if tail_driver else ()
     else:
         count = 0
         level = "dry"
+        drivers = ()
 
-    return BendBufferHealth(kit_count=count, level=level)
+    return BendBufferHealth(kit_count=count, level=level, drivers=drivers)
 
 
-def _compute_weld_feed(trucks: list[Truck]) -> WeldFeedStatus:
-    score = 0.0
+def _compute_laser_buffer(trucks: list[Truck]) -> BendBufferHealth:
+    laser_count = 0
+    has_body_tail_in_laser = False
+    front_drivers: list[str] = []
+    tail_driver = ""
+
     for truck in trucks:
         for kit in truck.kits:
             if not kit.is_active:
                 continue
-            front_stage = stage_from_id(kit.front_stage_id)
-            if front_stage in {Stage.BEND, Stage.WELD}:
-                score += 1.0
+            if kit.release_state == "not_released":
+                continue
 
-    if score < 2.0:
+            is_body = bool(kit.is_main_kit or kit.kit_name.strip().lower() == "body")
+            front_stage = stage_from_id(kit.front_stage_id)
+            if front_stage == Stage.LASER:
+                laser_count += 1
+                front_drivers.append(_driver_label(truck, kit))
+
+            if is_body:
+                back_stage = stage_from_id(kit.back_stage_id)
+                if back_stage == Stage.LASER:
+                    has_body_tail_in_laser = True
+                    if not tail_driver:
+                        tail_driver = _driver_label(truck, kit, "tail")
+
+    if laser_count >= 3:
+        count = laser_count
+        level = "healthy"
+        drivers = tuple(front_drivers)
+    elif laser_count > 0:
+        count = laser_count
         level = "low"
-    elif score < 4.0:
+        drivers = tuple(front_drivers)
+    elif has_body_tail_in_laser:
+        count = 1
+        level = "low"
+        drivers = (tail_driver,) if tail_driver else ()
+    else:
+        count = 0
+        level = "dry"
+        drivers = ()
+
+    return BendBufferHealth(kit_count=count, level=level, drivers=drivers)
+
+
+def _kit_in_weld_feed(kit: TruckKit, feed: str | None) -> bool:
+    if feed is None:
+        return True
+    kit_name = str(kit.kit_name or "").strip().lower()
+    is_feed_b = kit_name in WELD_FEED_B_KIT_NAMES
+    if feed == "b":
+        return is_feed_b
+    if feed == "a":
+        return not is_feed_b
+    return True
+
+
+def _is_body_ready_to_start(kit: TruckKit | None) -> bool:
+    if kit is None or not kit.is_active:
+        return False
+    return bool(
+        kit.release_state == "released"
+        or stage_from_id(kit.front_stage_id) > Stage.RELEASE
+    )
+
+
+def _stage_progress_percent(kit: TruckKit, stage: Stage) -> int:
+    positions = FABRICATION_STAGE_POSITION_SCALE.get(stage)
+    if not positions:
+        return 0
+
+    current_value = int(getattr(kit, "front_position", positions[0]) or positions[0])
+    if current_value in positions:
+        index = positions.index(current_value)
+    else:
+        index = min(range(len(positions)), key=lambda idx: abs(positions[idx] - current_value))
+
+    display_steps = [0, 10, 50, 90, 100]
+    if len(positions) == len(display_steps):
+        return int(display_steps[index])
+    if len(positions) <= 1:
+        return 100
+    return int(round((float(index) / float(len(positions) - 1)) * 100.0))
+
+
+def _weld_feed_contribution(kit: TruckKit) -> tuple[float, str | None]:
+    front_stage = stage_from_id(kit.front_stage_id)
+    if front_stage == Stage.WELD:
+        return (1.0, "weld")
+    if front_stage == Stage.BEND:
+        return (1.0, "bend")
+    if front_stage == Stage.LASER:
+        return (0.6, "laser")
+    if front_stage == Stage.RELEASE and str(kit.release_state or "").strip().lower() == "released":
+        return (0.25, "released")
+    return (0.0, None)
+
+
+def _compute_weld_feed_a(trucks: list[Truck]) -> WeldFeedStatus:
+    main_bodies: list[tuple[Truck, TruckKit]] = []
+    for truck in trucks:
+        main_kit = _find_main_body_kit(truck)
+        if main_kit is None or not main_kit.is_active:
+            continue
+        main_bodies.append((truck, main_kit))
+
+    if not main_bodies:
+        return WeldFeedStatus(score=0.0, level="watch")
+
+    current_weld_index = -1
+    for index, (_truck, kit) in enumerate(main_bodies):
+        if stage_from_id(kit.front_stage_id) == Stage.WELD:
+            current_weld_index = index
+            break
+
+    if current_weld_index >= 0:
+        current_truck, current_body = main_bodies[current_weld_index]
+        next_entry = main_bodies[current_weld_index + 1] if (current_weld_index + 1) < len(main_bodies) else None
+        next_body = next_entry[1] if next_entry is not None else None
+        next_ready = _is_body_ready_to_start(next_body)
+        progress_percent = _stage_progress_percent(current_body, Stage.WELD)
+        drivers = [_driver_label(current_truck, current_body, f"weld {progress_percent}%")]
+        if next_entry is not None:
+            next_truck, next_body = next_entry
+            next_note = "next ready" if next_ready else "next blocked"
+            drivers.append(_driver_label(next_truck, next_body, next_note))
+
+        if next_ready:
+            level = "watch" if progress_percent >= 100 else "healthy"
+        else:
+            level = "low" if progress_percent >= 50 else "watch"
+        return WeldFeedStatus(score=float(progress_percent), level=level, drivers=tuple(drivers))
+
+    next_entry = next(
+        ((truck, kit) for truck, kit in main_bodies if stage_from_id(kit.front_stage_id) != Stage.COMPLETE),
+        None,
+    )
+    if next_entry is None:
+        return WeldFeedStatus(score=0.0, level="watch")
+    next_truck, next_body = next_entry
+    drivers = (_driver_label(next_truck, next_body, "next ready"),)
+    if _is_body_ready_to_start(next_body):
+        return WeldFeedStatus(score=0.0, level="watch", drivers=drivers)
+    return WeldFeedStatus(
+        score=0.0,
+        level="low",
+        drivers=(_driver_label(next_truck, next_body, "next blocked"),),
+    )
+
+
+def _compute_weld_feed(trucks: list[Truck], feed: str | None = None) -> WeldFeedStatus:
+    score = 0.0
+    drivers: list[str] = []
+    for truck in trucks:
+        for kit in truck.kits:
+            if not kit.is_active:
+                continue
+            if not _kit_in_weld_feed(kit, feed):
+                continue
+            contribution, note = _weld_feed_contribution(kit)
+            if contribution <= 0.0:
+                continue
+            score += float(contribution)
+            note_text = note or "feed"
+            drivers.append(_driver_label(truck, kit, note_text))
+
+    if feed == "b":
+        low_threshold = 1.5
+        healthy_threshold = 3.0
+    else:
+        low_threshold = 2.0
+        healthy_threshold = 4.0
+
+    if score < low_threshold:
+        level = "low"
+    elif score < healthy_threshold:
         level = "watch"
     else:
         level = "healthy"
 
-    return WeldFeedStatus(score=round(score, 1), level=level)
+    return WeldFeedStatus(score=round(score, 1), level=level, drivers=tuple(drivers))
+
+
+def _format_late_weeks(value: float) -> str:
+    rounded_weeks = max(0, int(float(value) + 0.5))
+    unit = "week" if rounded_weeks == 1 else "weeks"
+    return f"{rounded_weeks} {unit} late"
 
 
 def _build_attention_items(
-    next_main_kit_risk: NextMainKitRisk,
     bend_buffer: BendBufferHealth,
-    weld_feed: WeldFeedStatus,
     schedule_insights: ScheduleInsights,
 ) -> list[AttentionItem]:
     items: list[AttentionItem] = []
@@ -532,27 +565,9 @@ def _build_attention_items(
                 title="Engineering release is holding work start",
                 detail=(
                     f"{len(schedule_insights.release_hold_items)} kit(s) past planned start; "
-                    f"oldest {oldest.hold_weeks:.1f} week(s) "
+                    f"oldest {_format_late_weeks(oldest.hold_weeks)} "
                     f"({oldest.truck_number} {oldest.kit_name})."
                 ),
-            )
-        )
-
-    if next_main_kit_risk.is_warning:
-        items.append(
-            AttentionItem(
-                priority=100,
-                title="Next Body not released",
-                detail=next_main_kit_risk.message,
-            )
-        )
-
-    if weld_feed.level == "low":
-        items.append(
-            AttentionItem(
-                priority=90,
-                title="Weld feed low",
-                detail="Insufficient active kits are feeding weld from bend.",
             )
         )
 
@@ -572,29 +587,6 @@ def _build_attention_items(
                 priority=80,
                 title="Bend buffer low",
                 detail=f"Less than 3 released kit(s) are in {laser_label}/{bend_label}.",
-            )
-        )
-
-    operation_standards = schedule_insights.operation_standards
-    overloaded_stages = [stage_label(op.stage_id).upper() for op in operation_standards if op.spare_days < 0.0]
-    low_spare_stages = [
-        stage_label(op.stage_id).upper() for op in operation_standards if 0.0 <= op.spare_days < 1.0
-    ]
-
-    if overloaded_stages:
-        items.append(
-            AttentionItem(
-                priority=88,
-                title="Operation standard is overbooked",
-                detail=("Planned work exceeds available duration in: " + ", ".join(overloaded_stages) + "."),
-            )
-        )
-    elif low_spare_stages:
-        items.append(
-            AttentionItem(
-                priority=72,
-                title="Spare capacity is tight",
-                detail=("Less than 1 spare day in: " + ", ".join(low_spare_stages) + "."),
             )
         )
 

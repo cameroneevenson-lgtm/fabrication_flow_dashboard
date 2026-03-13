@@ -33,10 +33,10 @@ A PySide6 application for tracking fabrication flow and schedule signals.
 - On startup, CSV rows are synced into the local SQLite database.
 - Missing CSV trucks are created with the default kit set:
   - Pumphouse
-  - Console Pack
+  - Console
   - Body
-  - Interior Pack
-  - Exterior Pack
+  - Interior
+  - Exterior
 - Sync is one-way and simple:
   - Existing trucks are updated for `day_zero`, `notes`, and `is_active`.
   - Trucks are not deleted from the database when removed from CSV.
@@ -51,8 +51,9 @@ A PySide6 application for tracking fabrication flow and schedule signals.
 - `stages.py` - canonical `Stage` enum and metadata
 - `schedule.py` - schedule insights and release/concurrency calculations
 - `metrics.py` - dashboard metrics and attention signals
-- `teams_card.py` - Operations dashboard snapshot to Microsoft Teams Adaptive Card payload builder
-- `export_boss_lens_teams_card.py` - export/post Teams webhook JSON payload
+- `teams_card.py` - compact Microsoft Teams Adaptive Card payload builders
+- `publish_artifacts.py` - published artifact generation and link resolution for Teams actions
+- `export_ops_snapshot_teams_card.py` - export/post Teams webhook JSON payload
 - `truck_registry.csv` - truck registry input
 - `fabrication_flow.db` - local operational state
 
@@ -64,26 +65,52 @@ A PySide6 application for tracking fabrication flow and schedule signals.
   - gantt rendering rules and exceptions
   - Teams payload sizing/degradation behavior
 
-## Teams Adaptive Card payload (Operations Dashboard)
+## Teams Adaptive Card payload (Fabrication Flow Dashboard)
 
-The app includes a `Publish to Teams` button for an operations snapshot.
+The app includes a `Publish to Teams` button for a compact Fabrication Flow Dashboard snapshot card.
 
-- Open the `Management Summary` tab.
+- Open the Fabrication Flow Dashboard.
 - The webhook URL is pre-filled with the project default.
-- Click `Test Auth` to send a minimal card and validate authorization first.
 - Click `Publish to Teams`.
-- Click `Publish My Version` to post `_runtime\teams_dashboard_card.json` as-is (for custom edits).
 - Payload is also written to `_runtime\teams_dashboard_card.json`.
+
+Publish order for `Publish to Teams`:
+- Generate/update published artifacts first:
+  - `_runtime\published\summary.html`
+  - `_runtime\published\gantt.png` (when image generation succeeds)
+  - `_runtime\published\status.json`
+- Build compact Adaptive Card payload that links to the published artifacts.
+- POST payload to the configured Teams webhook.
+
+Optional link configuration:
+- Create `_runtime\published_artifact_links.json` with:
+  - `summary_html_url`
+  - `gantt_png_url`
+  - `status_json_url`
+- Or set environment variables:
+  - `FABRICATION_FLOW_SUMMARY_HTML_URL`
+  - `FABRICATION_FLOW_GANTT_PNG_URL`
+  - `FABRICATION_FLOW_STATUS_JSON_URL`
+- If no published URLs are configured, local file URIs are used as fallback action targets.
 
 Generate the webhook JSON payload:
 
 ```powershell
-.\.venv\Scripts\python.exe export_boss_lens_teams_card.py --output _runtime\teams_dashboard_card.json
+.\.venv\Scripts\python.exe export_ops_snapshot_teams_card.py --output _runtime\teams_dashboard_card.json
 ```
 
 Generate and post directly to a webhook:
 
 ```powershell
-.\.venv\Scripts\python.exe export_boss_lens_teams_card.py --webhook-url "<YOUR_WEBHOOK_URL>"
+.\.venv\Scripts\python.exe export_ops_snapshot_teams_card.py --webhook-url "<YOUR_WEBHOOK_URL>"
+```
+
+Provide explicit artifact URLs from CLI when needed:
+
+```powershell
+.\.venv\Scripts\python.exe export_ops_snapshot_teams_card.py `
+  --summary-url "https://contoso.sharepoint.com/sites/fab/summary.html" `
+  --gantt-url "https://contoso.sharepoint.com/sites/fab/gantt.png" `
+  --status-url "https://contoso.sharepoint.com/sites/fab/status.json"
 ```
 

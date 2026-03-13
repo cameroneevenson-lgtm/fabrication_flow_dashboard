@@ -1,130 +1,91 @@
 ﻿{
-  "day_zero_week": 0.0,
-  "current_week": 9.0,
-  "truck_start_lag_weeks": 2.0,
-  "default_kit_lag_duration_weeks": {
-    "lag_weeks": 0.7,
-    "duration_weeks": 0.7
-  },
   "kits": {
     "Body": {
-      "lag_weeks": 0.0,
-      "duration_weeks": 0.9
+      "lag_weeks": 0.0
     },
     "Pumphouse": {
-      "lag_weeks": 2.0,
-      "duration_weeks": 2.0
+      "lag_weeks": 2.0
     },
     "Console Pack": {
-      "lag_weeks": 2.5,
-      "duration_weeks": 1.5
+      "lag_weeks": 2.5
     },
     "Interior Pack": {
-      "lag_weeks": 4.0,
-      "duration_weeks": 3.0
+      "lag_weeks": 4.0
     },
     "Exterior Pack": {
-      "lag_weeks": 4.0,
-      "duration_weeks": 3.0
-    }
-  },
-  "operation_standards": {
-    "release": {
-      "start_offset_weeks": 0.0,
-      "duration_weeks": 0.5,
-      "work_days": 1.5
-    },
-    "laser": {
-      "start_offset_weeks": 0.0,
-      "duration_weeks": 1.0,
-      "work_days": 3.0
-    },
-    "bend": {
-      "start_offset_weeks": 0.5,
-      "duration_weeks": 1.0,
-      "work_days": 3.5
-    },
-    "weld": {
-      "start_offset_weeks": 1.0,
-      "duration_weeks": 3.0,
-      "work_days": 4.0
+      "lag_weeks": 5.0
     }
   },
   "kit_operation_windows": {
     "Body": {
       "laser": {
-        "start_week": 0.0,
-        "end_week": 1.0
+        "start_offset_weeks": 0.0,
+        "end_offset_weeks": 0.5
       },
       "bend": {
-        "start_week": 0.5,
-        "end_week": 1.5
+        "start_offset_weeks": 0.5,
+        "end_offset_weeks": 1.5
       },
       "weld": {
-        "start_week": 1.0,
-        "end_week": 4.0
+        "start_offset_weeks": 1.5,
+        "end_offset_weeks": 4.0
       }
     },
     "Pumphouse": {
       "laser": {
-        "start_week": 2.0,
-        "end_week": 2.5
+        "start_offset_weeks": 0.0,
+        "end_offset_weeks": 0.5
       },
       "bend": {
-        "start_week": 2.5,
-        "end_week": 3.0
+        "start_offset_weeks": 0.5,
+        "end_offset_weeks": 1.0
       },
       "weld": {
-        "start_week": 2.0,
-        "end_week": 4.0
+        "start_offset_weeks": 1.0,
+        "end_offset_weeks": 3.0
       }
     },
     "Console Pack": {
       "laser": {
-        "start_week": 2.5,
-        "end_week": 3.0
+        "start_offset_weeks": 0.0,
+        "end_offset_weeks": 0.5
       },
       "bend": {
-        "start_week": 3.0,
-        "end_week": 3.5
+        "start_offset_weeks": 0.5,
+        "end_offset_weeks": 1.0
       },
       "weld": {
-        "start_week": 3.5,
-        "end_week": 4.0
+        "start_offset_weeks": 1.0,
+        "end_offset_weeks": 1.5
       }
     },
     "Interior Pack": {
       "laser": {
-        "start_week": 4.0,
-        "end_week": 5.0
+        "start_offset_weeks": 0.0,
+        "end_offset_weeks": 1.0
       },
       "bend": {
-        "start_week": 5.0,
-        "end_week": 6.0
+        "start_offset_weeks": 1.0,
+        "end_offset_weeks": 2.0
       },
       "weld": {
-        "start_week": 6.0,
-        "end_week": 7.0
+        "start_offset_weeks": 2.0,
+        "end_offset_weeks": 3.0
       }
     },
     "Exterior Pack": {
       "laser": {
-        "start_week": 4.0,
-        "end_week": 5.0
+        "start_offset_weeks": 0.0,
+        "end_offset_weeks": 1.0
       },
       "bend": {
-        "start_week": 5.0,
-        "end_week": 6.0
+        "start_offset_weeks": 1.0,
+        "end_offset_weeks": 2.0
       },
       "weld": {
-        "start_week": 6.0,
-        "end_week": 7.0
+        "start_offset_weeks": 2.0,
+        "end_offset_weeks": 3.0
       }
     }
-  },
-  "repeat_cycle": {
-    "repeat_weeks": 4.0,
-    "cycle_weeks": 7.0,
-    "odd_jobs_weeks": 1.0
   }
 }

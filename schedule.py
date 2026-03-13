@@ -9,54 +9,39 @@ from pathlib import Path
 from models import Truck
 from stages import STAGE_SEQUENCE, Stage, stage_from_id, stage_from_key, stage_key
 
-DEFAULT_DAY_ZERO_WEEK = 0.0
-DEFAULT_CURRENT_WEEK = 9.0
-DEFAULT_TRUCK_START_LAG_WEEKS = 2.0
-DEFAULT_KIT_LAG_DURATION_WEEKS: dict[str, tuple[float, float]] = {
-    "Body": (0.0, 0.9),
-    "Pumphouse": (2.0, 2.0),
-    "Console Pack": (2.5, 1.5),
-    "Interior Pack": (4.0, 3.0),
-    "Exterior Pack": (4.0, 3.0),
+DEFAULT_KIT_LAG_WEEKS: dict[str, float] = {
+    "Body": 0.0,
+    "Pumphouse": 2.0,
+    "Console": 2.5,
+    "Interior": 4.0,
+    "Exterior": 5.0,
 }
-DEFAULT_KIT_LAG_DURATION_WEEKS_FALLBACK = (0.7, 0.7)
-DEFAULT_OPERATION_STANDARDS: dict[Stage, tuple[float, float, float]] = {
-    Stage.RELEASE: (0.0, 0.5, 1.5),
-    Stage.LASER: (0.0, 1.0, 3.0),
-    Stage.BEND: (0.5, 1.0, 3.5),
-    Stage.WELD: (1.0, 3.0, 4.0),
-}
-DEFAULT_KIT_OPERATION_WINDOWS: dict[str, dict[Stage, tuple[float, float, str, float]]] = {
+DEFAULT_KIT_OPERATION_WINDOWS: dict[str, dict[Stage, tuple[float, float]]] = {
     "Body": {
-        Stage.LASER: (0.0, 1.0, "full", 5.0),
-        Stage.BEND: (0.5, 1.5, "full", 5.0),
-        Stage.WELD: (1.0, 4.0, "full", 15.0),
+        Stage.LASER: (0.0, 1.0),
+        Stage.BEND: (0.5, 1.5),
+        Stage.WELD: (1.0, 4.0),
     },
     "Pumphouse": {
-        Stage.LASER: (2.0, 2.5, "full", 2.5),
-        Stage.BEND: (2.5, 3.0, "full", 2.5),
-        Stage.WELD: (2.0, 4.0, "full", 10.0),
+        Stage.LASER: (0.0, 0.5),
+        Stage.BEND: (0.5, 1.0),
+        Stage.WELD: (0.0, 2.0),
     },
-    "Console Pack": {
-        Stage.LASER: (2.5, 3.0, "full", 2.5),
-        Stage.BEND: (3.0, 3.5, "full", 2.5),
-        Stage.WELD: (3.5, 4.0, "full", 2.5),
+    "Console": {
+        Stage.LASER: (0.0, 0.5),
+        Stage.BEND: (0.5, 1.0),
+        Stage.WELD: (1.0, 1.5),
     },
-    "Interior Pack": {
-        Stage.LASER: (4.0, 5.0, "flex", 3.0),
-        Stage.BEND: (5.0, 6.0, "flex", 3.0),
-        Stage.WELD: (6.0, 7.0, "flex", 3.0),
+    "Interior": {
+        Stage.LASER: (0.0, 1.0),
+        Stage.BEND: (1.0, 2.0),
+        Stage.WELD: (2.0, 3.0),
     },
-    "Exterior Pack": {
-        Stage.LASER: (4.0, 5.0, "flex", 3.0),
-        Stage.BEND: (5.0, 6.0, "flex", 3.0),
-        Stage.WELD: (6.0, 7.0, "flex", 3.0),
+    "Exterior": {
+        Stage.LASER: (0.0, 1.0),
+        Stage.BEND: (1.0, 2.0),
+        Stage.WELD: (2.0, 3.0),
     },
-}
-DEFAULT_REPEAT_CYCLE = {
-    "repeat_weeks": 4.0,
-    "cycle_weeks": 7.0,
-    "odd_jobs_weeks": 1.0,
 }
 CONFIG_FILENAME = "schedule_config.json"
 
@@ -69,40 +54,11 @@ class KitScheduleStandard:
 
 
 @dataclass
-class OperationStandard:
-    stage_id: int
-    start_offset_weeks: float
-    duration_weeks: float
-    work_days: float
-
-    @property
-    def spare_days(self) -> float:
-        return round((self.duration_weeks * 5.0) - self.work_days, 2)
-
-
-@dataclass
-class OperationOverlap:
-    upstream_stage_id: int
-    downstream_stage_id: int
-    overlap_weeks: float
-
-
-@dataclass
 class KitOperationWindow:
     kit_name: str
     stage_id: int
     start_week: float
     end_week: float
-
-
-@dataclass
-class CyclePlan:
-    repeat_weeks: float
-    cycle_weeks: float
-    odd_jobs_weeks: float
-    cycle_position_week: float
-    odd_jobs_window_start_week: float
-    in_odd_jobs_window: bool
 
 
 @dataclass
@@ -121,14 +77,9 @@ class ConcurrencyItem:
 
 @dataclass
 class ScheduleInsights:
-    day_zero_week: float
     current_week: float
-    truck_start_lag_weeks: float
     standards: list[KitScheduleStandard]
-    operation_standards: list[OperationStandard]
-    operation_overlaps: list[OperationOverlap]
     kit_operation_windows: list[KitOperationWindow]
-    cycle_plan: CyclePlan
     concurrency_items: list[ConcurrencyItem]
     truck_planned_start_week_by_id: dict[int, float]
     kit_release_hold_weeks_by_id: dict[int, float]
@@ -137,14 +88,12 @@ class ScheduleInsights:
 
 @dataclass
 class ScheduleConfig:
-    day_zero_week: float
-    current_week: float
-    truck_start_lag_weeks: float
-    kit_lag_duration_weeks: dict[str, tuple[float, float]]
-    default_kit_lag_duration_weeks: tuple[float, float]
-    operation_standards: dict[int, tuple[float, float, float]]
+    kit_lag_weeks: dict[str, float]
     kit_operation_windows: dict[str, dict[int, tuple[float, float]]]
-    repeat_cycle: tuple[float, float, float]
+
+
+_SCHEDULE_CONFIG_CACHE: ScheduleConfig | None = None
+_SCHEDULE_CONFIG_MTIME_NS: int | None = None
 
 
 def _config_path() -> Path:
@@ -153,39 +102,19 @@ def _config_path() -> Path:
 
 def _default_config_data() -> dict[str, object]:
     return {
-        "day_zero_week": DEFAULT_DAY_ZERO_WEEK,
-        "current_week": DEFAULT_CURRENT_WEEK,
-        "truck_start_lag_weeks": DEFAULT_TRUCK_START_LAG_WEEKS,
-        "default_kit_lag_duration_weeks": {
-            "lag_weeks": DEFAULT_KIT_LAG_DURATION_WEEKS_FALLBACK[0],
-            "duration_weeks": DEFAULT_KIT_LAG_DURATION_WEEKS_FALLBACK[1],
-        },
         "kits": {
-            name: {"lag_weeks": lag, "duration_weeks": duration}
-            for name, (lag, duration) in DEFAULT_KIT_LAG_DURATION_WEEKS.items()
-        },
-        "operation_standards": {
-            stage_key(stage): {
-                "start_offset_weeks": values[0],
-                "duration_weeks": values[1],
-                "work_days": values[2],
-            }
-            for stage, values in DEFAULT_OPERATION_STANDARDS.items()
+            name: {"lag_weeks": lag}
+            for name, lag in DEFAULT_KIT_LAG_WEEKS.items()
         },
         "kit_operation_windows": {
             kit_name: {
                 stage_key(stage): {
-                    "start_week": values[0],
-                    "end_week": values[1],
+                    "start_offset_weeks": values[0],
+                    "end_offset_weeks": values[1],
                 }
                 for stage, values in stage_map.items()
             }
             for kit_name, stage_map in DEFAULT_KIT_OPERATION_WINDOWS.items()
-        },
-        "repeat_cycle": {
-            "repeat_weeks": DEFAULT_REPEAT_CYCLE["repeat_weeks"],
-            "cycle_weeks": DEFAULT_REPEAT_CYCLE["cycle_weeks"],
-            "odd_jobs_weeks": DEFAULT_REPEAT_CYCLE["odd_jobs_weeks"],
         },
     }
 
@@ -213,44 +142,55 @@ def _current_year_week() -> float:
     return round(iso_week + intra_week_fraction, 2)
 
 
-def _parse_lag_duration_weeks(value: object, fallback: tuple[float, float]) -> tuple[float, float]:
+def _parse_kit_lag_weeks(value: object, fallback: float) -> float:
     if not isinstance(value, dict):
         return fallback
 
-    lag_weeks = _safe_float(value.get("lag_weeks"), fallback[0])
-    duration_weeks = _safe_float(value.get("duration_weeks"), fallback[1])
-    return (max(0.0, lag_weeks), max(0.0, duration_weeks))
+    lag_weeks = _safe_float(value.get("lag_weeks"), fallback)
+    return max(0.0, lag_weeks)
 
 
-def _parse_operation_standard(
+def _parse_kit_window_offsets(
     value: object,
-    fallback: tuple[float, float, float],
-) -> tuple[float, float, float]:
+    fallback: tuple[float, float],
+    *,
+    kit_lag_weeks: float,
+) -> tuple[float, float]:
     if not isinstance(value, dict):
         return fallback
 
-    start_offset_weeks = _safe_float(value.get("start_offset_weeks"), fallback[0])
-    duration_weeks = _safe_float(value.get("duration_weeks"), fallback[1])
-    work_days = _safe_float(value.get("work_days"), fallback[2])
+    if "start_offset_weeks" in value or "end_offset_weeks" in value or "duration_weeks" in value:
+        start_offset = max(0.0, _safe_float(value.get("start_offset_weeks"), fallback[0]))
+        if "end_offset_weeks" in value:
+            end_offset = _safe_float(value.get("end_offset_weeks"), fallback[1])
+        else:
+            duration_weeks = _safe_float(value.get("duration_weeks"), fallback[1] - fallback[0])
+            end_offset = start_offset + max(0.0, duration_weeks)
+        end_offset = max(start_offset, end_offset)
+        return (start_offset, end_offset)
 
-    return (
-        max(0.0, start_offset_weeks),
-        max(0.0, duration_weeks),
-        max(0.0, work_days),
-    )
-
-
-def _parse_start_end_weeks(value: object, fallback: tuple[float, float]) -> tuple[float, float]:
-    if not isinstance(value, dict):
-        return fallback
-
-    start_week = max(0.0, _safe_float(value.get("start_week"), fallback[0]))
-    end_week = max(start_week, _safe_float(value.get("end_week"), fallback[1]))
-    return (start_week, end_week)
+    # Legacy shape support: start/end encoded as absolute week positions from truck start.
+    start_week = max(0.0, _safe_float(value.get("start_week"), fallback[0] + kit_lag_weeks))
+    end_week = max(start_week, _safe_float(value.get("end_week"), fallback[1] + kit_lag_weeks))
+    start_offset = max(0.0, start_week - kit_lag_weeks)
+    end_offset = max(start_offset, end_week - kit_lag_weeks)
+    return (start_offset, end_offset)
 
 
 def load_schedule_config() -> ScheduleConfig:
+    global _SCHEDULE_CONFIG_CACHE, _SCHEDULE_CONFIG_MTIME_NS
     config_path = ensure_schedule_config_file()
+    try:
+        mtime_ns = int(config_path.stat().st_mtime_ns)
+    except OSError:
+        mtime_ns = None
+
+    if (
+        _SCHEDULE_CONFIG_CACHE is not None
+        and mtime_ns is not None
+        and _SCHEDULE_CONFIG_MTIME_NS == mtime_ns
+    ):
+        return _SCHEDULE_CONFIG_CACHE
 
     try:
         raw = json.loads(config_path.read_text(encoding="utf-8-sig"))
@@ -260,48 +200,20 @@ def load_schedule_config() -> ScheduleConfig:
     if not isinstance(raw, dict):
         raw = _default_config_data()
 
-    day_zero_week = _safe_float(raw.get("day_zero_week"), DEFAULT_DAY_ZERO_WEEK)
-    current_week = max(day_zero_week, _current_year_week())
-    truck_start_lag_weeks = max(0.0, _safe_float(raw.get("truck_start_lag_weeks"), DEFAULT_TRUCK_START_LAG_WEEKS))
-
-    default_kit_lag_duration_weeks = _parse_lag_duration_weeks(
-        raw.get("default_kit_lag_duration_weeks"),
-        DEFAULT_KIT_LAG_DURATION_WEEKS_FALLBACK,
-    )
-
-    kit_lag_duration_weeks: dict[str, tuple[float, float]] = {}
+    kit_lag_weeks: dict[str, float] = {}
     raw_kits = raw.get("kits", {})
     if not isinstance(raw_kits, dict):
         raw_kits = {}
 
-    for kit_name, default_pair in DEFAULT_KIT_LAG_DURATION_WEEKS.items():
-        kit_lag_duration_weeks[kit_name] = _parse_lag_duration_weeks(raw_kits.get(kit_name), default_pair)
+    for kit_name, default_lag in DEFAULT_KIT_LAG_WEEKS.items():
+        kit_lag_weeks[kit_name] = _parse_kit_lag_weeks(raw_kits.get(kit_name), default_lag)
 
     for kit_name, value in raw_kits.items():
         if not isinstance(kit_name, str):
             continue
-        if kit_name in kit_lag_duration_weeks:
+        if kit_name in kit_lag_weeks:
             continue
-        kit_lag_duration_weeks[kit_name] = _parse_lag_duration_weeks(value, default_kit_lag_duration_weeks)
-
-    raw_operations = raw.get("operation_standards", {})
-    if not isinstance(raw_operations, dict):
-        raw_operations = {}
-
-    operation_standards: dict[int, tuple[float, float, float]] = {}
-    for stage, fallback_values in DEFAULT_OPERATION_STANDARDS.items():
-        operation_standards[int(stage)] = _parse_operation_standard(
-            raw_operations.get(stage_key(stage)),
-            fallback_values,
-        )
-
-    for key, value in raw_operations.items():
-        stage = stage_from_key(key)
-        if stage is None:
-            continue
-        if int(stage) in operation_standards:
-            continue
-        operation_standards[int(stage)] = _parse_operation_standard(value, (0.0, 1.0, 5.0))
+        kit_lag_weeks[kit_name] = _parse_kit_lag_weeks(value, 0.0)
 
     raw_kit_windows = raw.get("kit_operation_windows", {})
     if not isinstance(raw_kit_windows, dict):
@@ -312,11 +224,13 @@ def load_schedule_config() -> ScheduleConfig:
         raw_stage_map = raw_kit_windows.get(kit_name, {})
         if not isinstance(raw_stage_map, dict):
             raw_stage_map = {}
+        kit_lag_week = kit_lag_weeks.get(kit_name, 0.0)
         stage_windows: dict[int, tuple[float, float]] = {}
         for stage, fallback_window in fallback_stage_map.items():
-            stage_windows[int(stage)] = _parse_start_end_weeks(
+            stage_windows[int(stage)] = _parse_kit_window_offsets(
                 raw_stage_map.get(stage_key(stage)),
                 fallback_window,
+                kit_lag_weeks=kit_lag_week,
             )
         kit_operation_windows[kit_name] = stage_windows
 
@@ -327,38 +241,24 @@ def load_schedule_config() -> ScheduleConfig:
             continue
         if not isinstance(raw_stage_map, dict):
             continue
+        kit_lag_week = kit_lag_weeks.get(kit_name, 0.0)
         stage_windows: dict[int, tuple[float, float]] = {}
         for raw_stage_key, value in raw_stage_map.items():
             stage = stage_from_key(raw_stage_key)
             if stage is None:
                 continue
-            stage_windows[int(stage)] = _parse_start_end_weeks(value, (0.0, 1.0))
+            stage_windows[int(stage)] = _parse_kit_window_offsets(
+                value,
+                (0.0, 1.0),
+                kit_lag_weeks=kit_lag_week,
+            )
         if stage_windows:
             kit_operation_windows[kit_name] = stage_windows
 
-    raw_repeat_cycle = raw.get("repeat_cycle", {})
-    if not isinstance(raw_repeat_cycle, dict):
-        raw_repeat_cycle = {}
-    repeat_weeks = max(0.0, _safe_float(raw_repeat_cycle.get("repeat_weeks"), DEFAULT_REPEAT_CYCLE["repeat_weeks"]))
-    cycle_weeks = max(1.0, _safe_float(raw_repeat_cycle.get("cycle_weeks"), DEFAULT_REPEAT_CYCLE["cycle_weeks"]))
-    odd_jobs_weeks = max(0.0, _safe_float(raw_repeat_cycle.get("odd_jobs_weeks"), DEFAULT_REPEAT_CYCLE["odd_jobs_weeks"]))
-    odd_jobs_weeks = min(odd_jobs_weeks, cycle_weeks)
-
-    return ScheduleConfig(
-        day_zero_week=round(day_zero_week, 2),
-        current_week=round(current_week, 2),
-        truck_start_lag_weeks=round(truck_start_lag_weeks, 2),
-        kit_lag_duration_weeks={
-            name: (round(vals[0], 2), round(vals[1], 2))
-            for name, vals in kit_lag_duration_weeks.items()
-        },
-        default_kit_lag_duration_weeks=(
-            round(default_kit_lag_duration_weeks[0], 2),
-            round(default_kit_lag_duration_weeks[1], 2),
-        ),
-        operation_standards={
-            stage_id: (round(vals[0], 2), round(vals[1], 2), round(vals[2], 2))
-            for stage_id, vals in operation_standards.items()
+    parsed = ScheduleConfig(
+        kit_lag_weeks={
+            name: round(value, 2)
+            for name, value in kit_lag_weeks.items()
         },
         kit_operation_windows={
             kit_name: {
@@ -367,12 +267,11 @@ def load_schedule_config() -> ScheduleConfig:
             }
             for kit_name, stage_map in kit_operation_windows.items()
         },
-        repeat_cycle=(
-            round(repeat_weeks, 2),
-            round(cycle_weeks, 2),
-            round(odd_jobs_weeks, 2),
-        ),
     )
+    if mtime_ns is not None:
+        _SCHEDULE_CONFIG_CACHE = parsed
+        _SCHEDULE_CONFIG_MTIME_NS = mtime_ns
+    return parsed
 
 
 def sort_trucks_natural(trucks: list[Truck]) -> list[Truck]:
@@ -417,62 +316,20 @@ def _planned_start_date_to_date(value: str) -> date | None:
         return None
 
 
-def _build_operation_standards(config: ScheduleConfig) -> list[OperationStandard]:
-    standards: list[OperationStandard] = []
-    for stage in STAGE_SEQUENCE:
-        if stage == Stage.COMPLETE:
-            continue
-        values = config.operation_standards.get(int(stage))
-        if not values:
-            continue
-        standards.append(
-            OperationStandard(
-                stage_id=int(stage),
-                start_offset_weeks=values[0],
-                duration_weeks=values[1],
-                work_days=values[2],
-            )
-        )
-    return standards
-
-
-def _build_operation_overlaps(standards: list[OperationStandard]) -> list[OperationOverlap]:
-    by_stage = {int(standard.stage_id): standard for standard in standards}
-    overlaps: list[OperationOverlap] = []
-
-    for upstream_stage, downstream_stage in ((Stage.LASER, Stage.BEND), (Stage.BEND, Stage.WELD)):
-        upstream = by_stage.get(int(upstream_stage))
-        downstream = by_stage.get(int(downstream_stage))
-        if not upstream or not downstream:
-            continue
-
-        upstream_end = upstream.start_offset_weeks + upstream.duration_weeks
-        overlap_weeks = round(upstream_end - downstream.start_offset_weeks, 2)
-        if overlap_weeks > 0.0:
-            overlaps.append(
-                OperationOverlap(
-                    upstream_stage_id=int(upstream_stage),
-                    downstream_stage_id=int(downstream_stage),
-                    overlap_weeks=overlap_weeks,
-                )
-            )
-
-    return overlaps
-
-
 def _build_kit_operation_windows(config: ScheduleConfig) -> list[KitOperationWindow]:
     windows: list[KitOperationWindow] = []
-    kit_order = {name: index for index, name in enumerate(config.kit_lag_duration_weeks.keys())}
+    kit_order = {name: index for index, name in enumerate(config.kit_lag_weeks.keys())}
     stage_order_index = {int(stage): index for index, stage in enumerate(STAGE_SEQUENCE)}
 
     for kit_name, stage_map in config.kit_operation_windows.items():
-        for stage_id, (start_week, end_week) in stage_map.items():
+        kit_lag_weeks = config.kit_lag_weeks.get(kit_name, 0.0)
+        for stage_id, (start_offset_weeks, end_offset_weeks) in stage_map.items():
             windows.append(
                 KitOperationWindow(
                     kit_name=kit_name,
                     stage_id=int(stage_from_id(stage_id)),
-                    start_week=start_week,
-                    end_week=end_week,
+                    start_week=round(kit_lag_weeks + start_offset_weeks, 2),
+                    end_week=round(kit_lag_weeks + end_offset_weeks, 2),
                 )
             )
 
@@ -487,24 +344,13 @@ def _build_kit_operation_windows(config: ScheduleConfig) -> list[KitOperationWin
     return windows
 
 
-def _build_cycle_plan(config: ScheduleConfig) -> CyclePlan:
-    repeat_weeks, cycle_weeks, odd_jobs_weeks = config.repeat_cycle
-    normalized_cycle_weeks = max(1.0, cycle_weeks)
-    normalized_odd_jobs_weeks = min(max(0.0, odd_jobs_weeks), normalized_cycle_weeks)
-
-    week_delta = max(0.0, config.current_week - config.day_zero_week)
-    cycle_position = round(week_delta % normalized_cycle_weeks, 2)
-    odd_jobs_window_start = round(max(0.0, normalized_cycle_weeks - normalized_odd_jobs_weeks), 2)
-    in_odd_jobs_window = normalized_odd_jobs_weeks > 0.0 and cycle_position >= odd_jobs_window_start
-
-    return CyclePlan(
-        repeat_weeks=round(repeat_weeks, 2),
-        cycle_weeks=round(normalized_cycle_weeks, 2),
-        odd_jobs_weeks=round(normalized_odd_jobs_weeks, 2),
-        cycle_position_week=cycle_position,
-        odd_jobs_window_start_week=odd_jobs_window_start,
-        in_odd_jobs_window=in_odd_jobs_window,
-    )
+def _derive_kit_duration_weeks(stage_map: dict[int, tuple[float, float]]) -> float:
+    weld_window = stage_map.get(int(Stage.WELD))
+    if weld_window is not None:
+        return max(0.0, float(weld_window[1]))
+    if not stage_map:
+        return 0.0
+    return max(max(0.0, float(end_offset)) for _start_offset, end_offset in stage_map.values())
 
 
 def _build_concurrency_items(trucks: list[Truck]) -> list[ConcurrencyItem]:
@@ -534,36 +380,35 @@ def _build_concurrency_items(trucks: list[Truck]) -> list[ConcurrencyItem]:
 def build_schedule_insights(trucks: list[Truck]) -> ScheduleInsights:
     config = load_schedule_config()
     ordered_trucks = sort_trucks_natural(trucks)
+    current_week = _current_year_week()
 
     truck_planned_start_week_by_id: dict[int, float] = {}
     kit_release_hold_weeks_by_id: dict[int, float] = {}
     release_hold_items: list[ReleaseHoldItem] = []
 
-    standards = [
-        KitScheduleStandard(
-            kit_name=name,
-            lag_weeks=values[0],
-            duration_weeks=values[1],
+    standards: list[KitScheduleStandard] = []
+    for kit_name, lag_weeks in config.kit_lag_weeks.items():
+        stage_map = config.kit_operation_windows.get(kit_name, {})
+        duration_weeks = round(_derive_kit_duration_weeks(stage_map), 2)
+        standards.append(
+            KitScheduleStandard(
+                kit_name=kit_name,
+                lag_weeks=lag_weeks,
+                duration_weeks=duration_weeks,
+            )
         )
-        for name, values in config.kit_lag_duration_weeks.items()
-    ]
 
-    operation_standards = _build_operation_standards(config)
-    operation_overlaps = _build_operation_overlaps(operation_standards)
     kit_operation_windows = _build_kit_operation_windows(config)
-    cycle_plan = _build_cycle_plan(config)
     concurrency_items = _build_concurrency_items(ordered_trucks)
 
     today = datetime.now().date()
 
-    for truck_index, truck in enumerate(ordered_trucks):
+    for truck in ordered_trucks:
         truck_planned_start_week = _planned_start_date_to_week(truck.planned_start_date)
         truck_planned_start_date = _planned_start_date_to_date(truck.planned_start_date)
-        if truck_planned_start_week is None:
-            truck_planned_start_week = round(
-                config.day_zero_week + (truck_index * config.truck_start_lag_weeks),
-                2,
-            )
+        if truck_planned_start_week is None or truck_planned_start_date is None:
+            # Unanchored trucks are intentionally excluded from schedule placement.
+            continue
         if truck.id is not None:
             truck_planned_start_week_by_id[truck.id] = truck_planned_start_week
 
@@ -571,10 +416,10 @@ def build_schedule_insights(trucks: list[Truck]) -> ScheduleInsights:
             if not kit.is_active:
                 continue
 
-            lag_weeks, _duration_weeks = config.kit_lag_duration_weeks.get(
-                kit.kit_name,
-                config.default_kit_lag_duration_weeks,
-            )
+            lag_weeks = config.kit_lag_weeks.get(kit.kit_name)
+            if lag_weeks is None:
+                # No implicit fallback for unknown kits.
+                continue
             planned_start_week = round(truck_planned_start_week + lag_weeks, 2)
 
             front_stage = stage_from_id(kit.front_stage_id)
@@ -589,10 +434,6 @@ def build_schedule_insights(trucks: list[Truck]) -> ScheduleInsights:
                 if today < planned_start_date:
                     continue
                 hold_weeks = round((today - planned_start_date).days / 7.0, 2)
-            else:
-                if config.current_week < planned_start_week:
-                    continue
-                hold_weeks = round(config.current_week - planned_start_week, 2)
 
             if kit.id is not None:
                 kit_release_hold_weeks_by_id[kit.id] = hold_weeks
@@ -609,14 +450,9 @@ def build_schedule_insights(trucks: list[Truck]) -> ScheduleInsights:
     release_hold_items.sort(key=lambda item: item.hold_weeks, reverse=True)
 
     return ScheduleInsights(
-        day_zero_week=config.day_zero_week,
-        current_week=config.current_week,
-        truck_start_lag_weeks=config.truck_start_lag_weeks,
+        current_week=round(current_week, 2),
         standards=standards,
-        operation_standards=operation_standards,
-        operation_overlaps=operation_overlaps,
         kit_operation_windows=kit_operation_windows,
-        cycle_plan=cycle_plan,
         concurrency_items=concurrency_items,
         truck_planned_start_week_by_id=truck_planned_start_week_by_id,
         kit_release_hold_weeks_by_id=kit_release_hold_weeks_by_id,

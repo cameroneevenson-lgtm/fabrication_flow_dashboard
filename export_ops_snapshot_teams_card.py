@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from database import FabricationDatabase
-from metrics import compute_dashboard_metrics, sort_trucks_natural
+from metrics import compute_dashboard_metrics, compute_snapshot_metrics, sort_trucks_natural
+from publish_artifacts import publish_compact_artifacts
 from schedule import build_schedule_insights
 from stages import Stage, stage_from_id
 from teams_card import build_teams_webhook_payload
@@ -43,7 +44,7 @@ def _post_payload(webhook_url: str, payload: dict[str, object]) -> tuple[int, st
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Export the operations dashboard snapshot as a Microsoft Teams Adaptive Card webhook JSON payload."
+        description="Export the Fabrication Flow Dashboard snapshot as a Microsoft Teams Adaptive Card webhook JSON payload."
     )
     parser.add_argument(
         "--output",
@@ -53,8 +54,23 @@ def main() -> int:
     parser.add_argument(
         "--max-trucks",
         type=int,
-        default=20,
+        default=5,
         help="Maximum truck rows to include in the card.",
+    )
+    parser.add_argument(
+        "--summary-url",
+        default="",
+        help="Published URL for summary.html (for Action.OpenUrl).",
+    )
+    parser.add_argument(
+        "--gantt-url",
+        default="",
+        help="Published URL for gantt.png (for Action.OpenUrl).",
+    )
+    parser.add_argument(
+        "--status-url",
+        default="",
+        help="Published URL for status.json (for Action.OpenUrl).",
     )
     parser.add_argument(
         "--webhook-url",
@@ -74,13 +90,37 @@ def main() -> int:
 
     schedule_insights = build_schedule_insights(active_trucks)
     dashboard_metrics = compute_dashboard_metrics(active_trucks, schedule_insights=schedule_insights)
+    snapshot_metrics = compute_snapshot_metrics(
+        active_trucks,
+        schedule_insights=schedule_insights,
+        dashboard_metrics=dashboard_metrics,
+    )
+
+    generated_at = datetime.now(timezone.utc)
+    configured_links = {
+        "summary_html_url": str(args.summary_url or "").strip(),
+        "gantt_png_url": str(args.gantt_url or "").strip(),
+        "status_json_url": str(args.status_url or "").strip(),
+    }
+
+    artifacts = publish_compact_artifacts(
+        project_root=root,
+        trucks=active_trucks,
+        dashboard_metrics=dashboard_metrics,
+        schedule_insights=schedule_insights,
+        snapshot_metrics=snapshot_metrics,
+        generated_at=generated_at,
+        configured_links=configured_links,
+    )
 
     payload = build_teams_webhook_payload(
         trucks=active_trucks,
         dashboard_metrics=dashboard_metrics,
         schedule_insights=schedule_insights,
         max_trucks=max(1, int(args.max_trucks)),
-        generated_at=datetime.now(timezone.utc),
+        max_attention=3,
+        artifact_links=artifacts.action_links,
+        generated_at=artifacts.generated_at,
     )
 
     output_path = Path(args.output)
@@ -89,6 +129,12 @@ def main() -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(f"Wrote Adaptive Card payload: {output_path}")
+    print(f"Wrote published summary: {artifacts.summary_html_path}")
+    print(f"Wrote published status: {artifacts.status_json_path}")
+    print(f"Wrote published gantt: {artifacts.gantt_png_path or 'not generated'}")
+    print(f"Action link (dashboard): {artifacts.action_links.get('summary_html_url', '')}")
+    print(f"Action link (gantt): {artifacts.action_links.get('gantt_png_url', '')}")
+    print(f"Action link (json): {artifacts.action_links.get('status_json_url', '')}")
 
     webhook_url = str(args.webhook_url or "").strip()
     if webhook_url:

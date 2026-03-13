@@ -5,7 +5,13 @@ from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from typing import Any
 
-from metrics import DashboardMetrics
+from gantt_overlay import (
+    OverlayRow,
+    build_overlay_rows,
+    compute_overlay_viewport,
+    render_overlay_png,
+)
+from metrics import DashboardMetrics, SnapshotMetrics, compute_snapshot_metrics
 from models import Truck, TruckKit
 from schedule import ScheduleInsights
 from stages import STAGE_SEQUENCE, Stage, stage_from_id, stage_label
@@ -123,17 +129,6 @@ def _week_value_to_date_label(week_value: float, current_week: float) -> str:
     return target_date.strftime("%b %d, %Y")
 
 
-def _normalize_week_around_current(week_value: float, current_week: float) -> float:
-    value = float(week_value)
-    current = float(current_week)
-    cycle = 52.0
-    while (value - current) > 26.0:
-        value -= cycle
-    while (current - value) > 26.0:
-        value += cycle
-    return value
-
-
 def _safe_toggle_id(value: str, fallback_index: int) -> str:
     clean = "".join(ch if ch.isalnum() else "_" for ch in str(value or "").strip())
     clean = clean.strip("_")
@@ -149,13 +144,6 @@ def _week_to_index(week_value: float, min_week: float, max_week: float, width: i
     ratio = (float(week_value) - min_week) / span
     idx = int(round(ratio * float(width - 1)))
     return max(0, min(width - 1, idx))
-
-
-def _safe_row_token(value: object, fallback: str) -> str:
-    tokens = str(value or "").strip().split()
-    if tokens:
-        return tokens[0]
-    return fallback
 
 
 def _compress_png_bytes(raw: bytes, *, max_bytes: int) -> bytes:
@@ -204,209 +192,26 @@ def _compress_png_bytes(raw: bytes, *, max_bytes: int) -> bytes:
 
 
 def _render_gantt_png_data_uri(
-    rows: list[tuple[str, dict[Stage, tuple[float, float]], Stage, Stage, bool, bool]],
+    rows: list[OverlayRow],
     *,
     current_week: float,
     min_week: float,
     max_week: float,
 ) -> str | None:
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        from matplotlib import pyplot as plt
-        from matplotlib.lines import Line2D
-        from matplotlib.patches import Patch
-    except Exception:
-        return None
-
-    ordered_rows = list(reversed(rows))
-    if not ordered_rows:
-        return None
-
-    fig_width = 9.4
-    bar_height = 0.38
-    row_step = bar_height
-    fig_height = max(1.1, 0.13 * len(ordered_rows) + 0.45)
-    fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=110)
-
-    colors = {
-        Stage.LASER: "#F97316",
-        Stage.BEND: "#2563EB",
-        Stage.WELD: "#7C3AED",
-        Stage.COMPLETE: "#16A34A",
-    }
-
-    y_positions: list[float] = []
-    labels: list[str] = []
-    for row_index, (row_label, windows, actual_stage, tail_stage, is_released, has_blocker) in enumerate(ordered_rows):
-        y = row_index * row_step
-        y_positions.append(y)
-        labels.append(row_label)
-        if not windows:
-            continue
-
-        last_end = max(end for _start, end in windows.values())
-
-        for stage in (Stage.LASER, Stage.BEND, Stage.WELD):
-            bounds = windows.get(stage)
-            if bounds is None:
-                continue
-            start_week, end_week = bounds
-            width = max(0.08, end_week - start_week)
-            ax.barh(y, width, left=start_week, height=bar_height, color=colors[stage], alpha=0.95)
-
-        complete_right = min(max_week, last_end + 0.35)
-        complete_width = max(0.08, complete_right - last_end)
-        ax.barh(y, complete_width, left=last_end, height=bar_height, color=colors[Stage.COMPLETE], alpha=0.9)
-
-        marker_week: float | None = None
-        marker_color = "#16A34A"
-        late_arrow_start_week: float | None = None
-        if not is_released:
-            laser_bounds = windows.get(Stage.LASER)
-            if laser_bounds is not None:
-                laser_start_week = float(laser_bounds[0])
-                laser_trailing_week = float(laser_bounds[1])
-            elif windows:
-                laser_start_week = min(float(start) for start, _end in windows.values())
-                laser_trailing_week = max(float(end) for _start, end in windows.values())
-            else:
-                laser_start_week = float(current_week)
-                laser_trailing_week = float(current_week)
-            is_late_release = float(current_week) > float(laser_trailing_week)
-            marker_week = laser_start_week if is_late_release else laser_trailing_week
-            if is_late_release:
-                late_arrow_start_week = float(current_week)
-            marker_color = "#DC2626"
-        else:
-            stage_bounds = windows.get(actual_stage)
-            if stage_bounds is not None:
-                marker_week = (stage_bounds[0] + stage_bounds[1]) / 2.0
-            elif actual_stage == Stage.COMPLETE:
-                marker_week = last_end
-            if has_blocker:
-                marker_color = "#F59E0B"
-
-        if marker_week is not None:
-            marker_week = max(min_week, min(max_week, marker_week))
-            ax.scatter([marker_week], [y], s=30, c=marker_color, marker="o", zorder=6)
-
-        if late_arrow_start_week is not None and marker_week is not None:
-            arrow_start = max(min_week, min(max_week, late_arrow_start_week))
-            if arrow_start > (marker_week + 0.01):
-                ax.annotate(
-                    "",
-                    xy=(marker_week, y),
-                    xytext=(arrow_start, y),
-                    arrowprops={
-                        "arrowstyle": "->",
-                        "color": "#DC2626",
-                        "lw": 1.2,
-                        "shrinkA": 0,
-                        "shrinkB": 0,
-                    },
-                    zorder=5.8,
-                )
-
-        if tail_stage < actual_stage and marker_week is not None:
-            tail_week: float | None = None
-            tail_bounds = windows.get(tail_stage)
-            if tail_bounds is not None:
-                tail_week = (tail_bounds[0] + tail_bounds[1]) / 2.0
-            elif tail_stage == Stage.RELEASE:
-                laser_bounds = windows.get(Stage.LASER)
-                if laser_bounds is not None:
-                    tail_week = float(laser_bounds[0])
-                elif windows:
-                    tail_week = min(start for start, _end in windows.values())
-            elif tail_stage == Stage.COMPLETE:
-                tail_week = last_end
-
-            if tail_week is not None:
-                tail_week = max(min_week, min(max_week, tail_week))
-                ax.annotate(
-                    "",
-                    xy=(marker_week, y),
-                    xytext=(tail_week, y),
-                    arrowprops={
-                        "arrowstyle": "->",
-                        "color": "#374151",
-                        "lw": 1.0,
-                        "shrinkA": 0,
-                        "shrinkB": 0,
-                    },
-                    zorder=5,
-                )
-
-    if y_positions:
-        boundary_lines = [y - (bar_height / 2.0) for y in y_positions]
-        boundary_lines.append(y_positions[-1] + (bar_height / 2.0))
-        for separator_y in boundary_lines:
-            ax.hlines(
-                separator_y,
-                float(min_week),
-                float(max_week),
-                color="#D9E2EC",
-                linewidth=0.6,
-                alpha=0.75,
-                zorder=1.5,
-            )
-
-    ax.axvline(float(current_week), color="#DC2626", linestyle="--", linewidth=1.2, zorder=2)
-    ax.set_xlim(float(min_week), float(max_week))
-    ax.set_yticks(y_positions)
-    ax.set_yticklabels(labels, fontsize=5.5)
-    ax.tick_params(axis="y", pad=0)
-    if y_positions:
-        ax.set_ylim(-bar_height / 2.0, y_positions[-1] + (bar_height / 2.0))
-    ticks = [float(current_week) + float(offset) for offset in range(-8, 9)]
-    ax.set_xticks(ticks)
-    ax.set_xticklabels(
-        [_week_value_to_date_label(value, current_week) for value in ticks],
-        fontsize=6,
-        rotation=45,
-        ha="right",
+    raw = render_overlay_png(
+        rows=rows,
+        current_week=current_week,
+        min_week=min_week,
+        max_week=max_week,
+        week_label=_week_value_to_date_label,
+        fig_width=9.4,
+        dpi=110,
+        bar_height=0.38,
+        y_label_size=5.5,
+        x_label_size=6.0,
+        x_label_text="Week of",
+        legend_size=6.0,
     )
-    ax.grid(axis="x", color="#94A3B8", linewidth=0.45, alpha=0.35)
-    ax.margins(y=0.0)
-    ax.set_xlabel("Week of (8 weeks back / 8 weeks forward)", fontsize=7)
-    legend_handles = [
-        Patch(facecolor=colors[Stage.LASER], label="Laser"),
-        Patch(facecolor=colors[Stage.BEND], label="Bend"),
-        Patch(facecolor=colors[Stage.WELD], label="Weld"),
-        Patch(facecolor=colors[Stage.COMPLETE], label="Complete"),
-        Line2D([0], [0], color="#DC2626", linestyle="--", linewidth=1.2, label="Current week"),
-        Line2D(
-            [0],
-            [0],
-            marker="o",
-            color="#111827",
-            markerfacecolor="#111827",
-            markersize=4.0,
-            linewidth=0,
-            label="Actual stage (state-colored)",
-        ),
-    ]
-    ax.legend(
-        handles=legend_handles,
-        loc="upper right",
-        fontsize=6,
-        frameon=True,
-        framealpha=0.95,
-        edgecolor="#CBD5E1",
-    )
-    ax.set_facecolor("#FFFFFF")
-    fig.patch.set_facecolor("#FFFFFF")
-    fig.tight_layout(pad=0.2)
-
-    try:
-        buffer = BytesIO()
-        fig.savefig(buffer, format="png")
-        raw = buffer.getvalue()
-    finally:
-        plt.close(fig)
-
     if not raw:
         return None
     compressed = _compress_png_bytes(raw, max_bytes=TEAMS_GANTT_MAX_PNG_BYTES)
@@ -425,99 +230,35 @@ def _build_scheduled_vs_actual_gantt_items(
     chart_width: int = 26,
     allow_image: bool = True,
 ) -> list[dict[str, Any]]:
-    kit_windows_by_name: dict[str, dict[Stage, tuple[float, float]]] = {}
-    for window in schedule_insights.kit_operation_windows:
-        kit_key = str(window.kit_name or "").strip().lower()
-        if not kit_key:
-            continue
-        stage = stage_from_id(window.stage_id)
-        kit_windows_by_name.setdefault(kit_key, {})[stage] = (
-            float(window.start_week),
-            float(window.end_week),
-        )
-
-    if not kit_windows_by_name:
-        return [
-            {
-                "type": "TextBlock",
-                "text": "Scheduled vs Actual Gantt is unavailable (no kit schedule windows configured).",
-                "isSubtle": True,
-                "wrap": True,
-                "spacing": "Small",
-            }
-        ]
-
-    rows: list[tuple[str, dict[Stage, tuple[float, float]], Stage, Stage, bool, bool]] = []
-    for truck in trucks:
-        if truck.id is None:
-            continue
-        truck_start_week = schedule_insights.truck_planned_start_week_by_id.get(int(truck.id))
-        if truck_start_week is None:
-            continue
-        for kit in truck.kits:
-            if not kit.is_active:
-                continue
-            actual_stage = stage_from_id(kit.front_stage_id)
-            tail_stage = stage_from_id(kit.back_stage_id)
-            if actual_stage == Stage.COMPLETE:
-                continue
-            kit_key = str(kit.kit_name or "").strip().lower()
-            base_windows = kit_windows_by_name.get(kit_key)
-            if not base_windows:
-                continue
-            absolute_windows: dict[Stage, tuple[float, float]] = {}
-            for stage, (start_week, end_week) in base_windows.items():
-                if stage < tail_stage:
-                    # Hide upstream stages that are already complete unless they are still in tail.
-                    continue
-                start_value = _normalize_week_around_current(
-                    truck_start_week + start_week,
-                    schedule_insights.current_week,
-                )
-                end_value = _normalize_week_around_current(
-                    truck_start_week + end_week,
-                    schedule_insights.current_week,
-                )
-                if end_value < start_value:
-                    end_value = start_value
-                absolute_windows[stage] = (start_value, end_value)
-            if not absolute_windows:
-                continue
-            truck_token = _safe_row_token(truck.truck_number, "Truck?")
-            kit_token = _safe_row_token(kit.kit_name, "Kit?")
-            row_label = f"{truck_token} | {kit_token}"
-            is_released = str(kit.release_state or "").strip().lower() == "released"
-            has_blocker = bool(str(kit.blocker or "").strip())
-            rows.append((row_label, absolute_windows, actual_stage, tail_stage, is_released, has_blocker))
-
+    rows = build_overlay_rows(
+        trucks=trucks,
+        schedule_insights=schedule_insights,
+        max_rows=max_rows,
+    )
     if not rows:
         return [
             {
                 "type": "TextBlock",
-                "text": "Scheduled vs Actual Gantt is unavailable (no truck schedule anchors).",
+                "text": "Scheduled vs Actual Gantt is unavailable (no active kit rows with schedule anchors).",
                 "isSubtle": True,
                 "wrap": True,
                 "spacing": "Small",
             }
         ]
 
-    rows.sort(
-        key=lambda row: (
-            min(start for start, _end in row[1].values()),
-            row[0].lower(),
-        )
-    )
-    rows = rows[: max(1, int(max_rows))]
-
     current_week = float(schedule_insights.current_week)
-    min_week = current_week - 8.0
-    max_week = current_week + 8.0
+    min_week, max_week = compute_overlay_viewport(
+        rows=rows,
+        current_week=current_week,
+        forward_horizon_weeks=8.0,
+        side_padding_weeks=0.35,
+    )
 
     image_url: str | None = None
     if allow_image:
         image_url = _render_gantt_png_data_uri(
             rows,
-            current_week=float(schedule_insights.current_week),
+            current_week=current_week,
             min_week=float(min_week),
             max_week=float(max_week),
         )
@@ -540,8 +281,8 @@ def _build_scheduled_vs_actual_gantt_items(
             {
                 "type": "TextBlock",
                 "text": (
-                    "Red dashed line = current week. "
-                    "Late unreleased markers sit at laser start with a red arrow back from current week."
+                    "Front marker colors: black not due, red blocked/late release, yellow behind, "
+                    "green on schedule, blue ahead. Back marker stays neutral."
                 ),
                 "isSubtle": True,
                 "spacing": "Small",
@@ -561,43 +302,27 @@ def _build_scheduled_vs_actual_gantt_items(
         },
         {
             "type": "TextBlock",
-            "text": "Legend: L laser, B bend, W weld, C complete, ! unreleased, | current week",
+            "text": "Legend: L laser, B bend, W weld, o back, O front, > drift, | current week",
             "isSubtle": True,
             "spacing": "None",
             "wrap": True,
         },
         {
             "type": "TextBlock",
-            "text": (
-                f"Range: Week of {_week_value_to_date_label(min_week, schedule_insights.current_week)}"
-                f" to Week of {_week_value_to_date_label(max_week, schedule_insights.current_week)}"
-            ),
+            "text": f"Week of {_week_value_to_date_label(schedule_insights.current_week, schedule_insights.current_week)}",
             "isSubtle": True,
             "spacing": "None",
             "wrap": True,
         },
     ]
 
-    scheduled_fill_map: list[tuple[Stage, str]] = [
-        (Stage.LASER, "L"),
-        (Stage.BEND, "B"),
-        (Stage.WELD, "W"),
-    ]
-    actual_marker_map: dict[Stage, str] = {
-        Stage.LASER: "L",
-        Stage.BEND: "B",
-        Stage.WELD: "W",
-        Stage.COMPLETE: "C",
-    }
-
-    for row_label, windows, actual_stage, _tail_stage, is_released, _has_blocker in rows:
+    for row in rows:
+        row_label = row.row_label
+        windows = row.windows
         scheduled = ["."] * chart_width
         actual = ["."] * chart_width
 
-        last_end = max(end for _start, end in windows.values())
-        scheduled[_week_to_index(last_end, min_week, max_week, chart_width)] = "C"
-
-        for stage, char in scheduled_fill_map:
+        for stage, char in ((Stage.LASER, "L"), (Stage.BEND, "B"), (Stage.WELD, "W")):
             bounds = windows.get(stage)
             if bounds is None:
                 continue
@@ -609,30 +334,23 @@ def _build_scheduled_vs_actual_gantt_items(
             for idx in range(start_idx, end_idx + 1):
                 scheduled[idx] = char
 
-        marker = actual_marker_map.get(actual_stage)
-        marker_week: float | None = None
-        if not is_released:
-            laser_bounds = windows.get(Stage.LASER)
-            if laser_bounds is not None:
-                laser_start_week = float(laser_bounds[0])
-                laser_trailing_week = float(laser_bounds[1])
-            elif windows:
-                laser_start_week = min(float(start) for start, _end in windows.values())
-                laser_trailing_week = max(float(end) for _start, end in windows.values())
-            else:
-                laser_start_week = float(schedule_insights.current_week)
-                laser_trailing_week = float(schedule_insights.current_week)
-            is_late_release = float(schedule_insights.current_week) > float(laser_trailing_week)
-            marker_week = laser_start_week if is_late_release else laser_trailing_week
-            marker = "!"
-        else:
-            stage_bounds = windows.get(actual_stage)
-            if stage_bounds is not None:
-                marker_week = (stage_bounds[0] + stage_bounds[1]) / 2.0
-            elif actual_stage == Stage.COMPLETE:
-                marker_week = last_end
-        if marker_week is not None and marker:
-            actual[_week_to_index(marker_week, min_week, max_week, chart_width)] = marker
+        back_idx = _week_to_index(row.back_week, min_week, max_week, chart_width)
+        front_idx = _week_to_index(row.front_week, min_week, max_week, chart_width)
+        if back_idx != front_idx:
+            left_idx = min(back_idx, front_idx)
+            right_idx = max(back_idx, front_idx)
+            for idx in range(left_idx + 1, right_idx):
+                actual[idx] = "-"
+        actual[back_idx] = "o"
+        actual[front_idx] = "O"
+        if row.is_behind:
+            target_week = current_week if row.status_key in {"red", "yellow"} else (
+                row.expected_week if row.expected_week is not None else current_week
+            )
+            target_idx = _week_to_index(target_week, min_week, max_week, chart_width)
+            if target_idx > front_idx:
+                for idx in range(front_idx + 1, target_idx):
+                    actual[idx] = ">"
 
         if scheduled[now_idx] == ".":
             scheduled[now_idx] = "|"
@@ -684,8 +402,6 @@ def build_dashboard_adaptive_card(
     active_kits = _count_active_kits(trucks)
     blocked_kits = _count_blocked_kits(trucks)
     late_releases = len(schedule_insights.release_hold_items)
-    next_body_ready = not dashboard_metrics.next_main_kit_risk.is_warning
-
     summary_tiles = [
         (
             "Active Trucks",
@@ -712,22 +428,28 @@ def build_dashboard_adaptive_card(
             "problem" if blocked_kits > 0 else "ok",
         ),
         (
-            "Next Body",
-            "Ready" if next_body_ready else "At Risk",
-            dashboard_metrics.next_main_kit_risk.message,
-            "ok" if next_body_ready else "problem",
+            "Laser",
+            dashboard_metrics.laser_buffer.level.upper(),
+            "Released work currently feeding laser.",
+            dashboard_metrics.laser_buffer.level,
         ),
         (
-            "Bend Buffer",
+            "Brake",
             dashboard_metrics.bend_buffer.level.upper(),
             "3+ released kits in laser/bend is healthy.",
             dashboard_metrics.bend_buffer.level,
         ),
         (
-            "Weld Feed",
-            dashboard_metrics.weld_feed.level.upper(),
-            "Flow readiness from bend into weld.",
-            dashboard_metrics.weld_feed.level,
+            "Weld A",
+            dashboard_metrics.weld_feed_a.level.upper(),
+            "Body-line continuity into weld A.",
+            dashboard_metrics.weld_feed_a.level,
+        ),
+        (
+            "Weld B",
+            dashboard_metrics.weld_feed_b.level.upper(),
+            "Console / interior / exterior weld feed.",
+            dashboard_metrics.weld_feed_b.level,
         ),
     ]
 
@@ -936,16 +658,190 @@ def build_teams_webhook_payload(
     trucks: list[Truck],
     dashboard_metrics: DashboardMetrics,
     schedule_insights: ScheduleInsights,
-    max_trucks: int = 20,
+    max_trucks: int = 5,
+    max_attention: int = 3,
+    artifact_links: dict[str, str] | None = None,
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
-    card = build_dashboard_adaptive_card(
+    generated = generated_at or datetime.now(timezone.utc)
+    generated_text = generated.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    blocked_kits = _count_blocked_kits(trucks)
+
+    snapshot_metrics: SnapshotMetrics = compute_snapshot_metrics(
         trucks=trucks,
-        dashboard_metrics=dashboard_metrics,
         schedule_insights=schedule_insights,
-        max_trucks=max_trucks,
-        generated_at=generated_at,
+        dashboard_metrics=dashboard_metrics,
     )
+
+    summary_facts = [
+        {"title": "Active Trucks", "value": str(len(trucks))},
+        {"title": "Laser", "value": dashboard_metrics.laser_buffer.level.capitalize()},
+        {"title": "Brake", "value": dashboard_metrics.bend_buffer.level.capitalize()},
+        {"title": "Weld A", "value": dashboard_metrics.weld_feed_a.level.capitalize()},
+        {"title": "Weld B", "value": dashboard_metrics.weld_feed_b.level.capitalize()},
+        {"title": "Kits Behind Schedule", "value": str(snapshot_metrics.sync_summary.behind_kits)},
+        {"title": "Blocked Kits", "value": str(blocked_kits)},
+    ]
+
+    body: list[dict[str, Any]] = [
+        {
+            "type": "TextBlock",
+            "text": "Fabrication Status",
+            "size": "Large",
+            "weight": "Bolder",
+            "wrap": True,
+        },
+        {
+            "type": "TextBlock",
+            "text": f"Published: {generated_text}",
+            "isSubtle": True,
+            "spacing": "None",
+            "wrap": True,
+        },
+        {
+            "type": "TextBlock",
+            "text": "Confirmed published snapshot",
+            "isSubtle": True,
+            "spacing": "None",
+            "wrap": True,
+        },
+        {
+            "type": "TextBlock",
+            "text": "Top Summary",
+            "weight": "Bolder",
+            "spacing": "Medium",
+            "wrap": True,
+        },
+        {
+            "type": "FactSet",
+            "facts": summary_facts,
+            "spacing": "Small",
+        },
+        {
+            "type": "TextBlock",
+            "text": "Risk Summary",
+            "weight": "Bolder",
+            "spacing": "Medium",
+            "wrap": True,
+        },
+    ]
+
+    attention_items = dashboard_metrics.attention_items[: max(1, int(max_attention))]
+    for item in attention_items:
+        tone = "problem" if item.priority >= 90 else ("caution" if item.priority >= 70 else "ok")
+        body.append(
+            {
+                "type": "TextBlock",
+                "text": f"- {item.title}: {item.detail}",
+                "color": _tone_to_adaptive_color(tone),
+                "spacing": "Small",
+                "wrap": True,
+            }
+        )
+    if not attention_items:
+        body.append(
+            {
+                "type": "TextBlock",
+                "text": "- No urgent flow risks.",
+                "isSubtle": True,
+                "spacing": "Small",
+                "wrap": True,
+            }
+        )
+
+    body.append(
+        {
+            "type": "TextBlock",
+            "text": "Per-Truck Summary",
+            "weight": "Bolder",
+            "spacing": "Medium",
+            "wrap": True,
+        }
+    )
+
+    tone_order = {"problem": 0, "caution": 1, "ok": 2}
+    sorted_truck_rows = sorted(
+        snapshot_metrics.truck_rows,
+        key=lambda row: (
+            tone_order.get(str(row.tone or "").lower(), 3),
+            0 if str(row.risk_category or "").strip().lower() != "in sync" else 1,
+            str(row.truck_number or "").lower(),
+        ),
+    )
+    visible_rows = sorted_truck_rows[: max(1, int(max_trucks))]
+    for row in visible_rows:
+        body.append(
+            {
+                "type": "TextBlock",
+                "text": f"- {row.truck_number} - {row.main_stage} - {row.sync_status} - {row.issue_summary}",
+                "color": _tone_to_adaptive_color(row.tone),
+                "spacing": "Small",
+                "wrap": True,
+            }
+        )
+    remaining_rows = max(0, len(sorted_truck_rows) - len(visible_rows))
+    if remaining_rows > 0:
+        body.append(
+            {
+                "type": "TextBlock",
+                "text": f"+{remaining_rows} more truck(s) not shown.",
+                "isSubtle": True,
+                "spacing": "Small",
+                "wrap": True,
+            }
+        )
+
+    links = {
+        "summary_html_url": "",
+        "gantt_png_url": "",
+        "status_json_url": "",
+    }
+    if artifact_links:
+        for key in links:
+            links[key] = str(artifact_links.get(key, "")).strip()
+
+    actions: list[dict[str, Any]] = []
+    action_order = [
+        ("Open Full Dashboard", "summary_html_url"),
+        ("Open Gantt Snapshot", "gantt_png_url"),
+        ("Open Published JSON", "status_json_url"),
+    ]
+    for title, key in action_order:
+        url = links.get(key, "")
+        if not url:
+            continue
+        actions.append(
+            {
+                "type": "Action.OpenUrl",
+                "title": title,
+                "url": url,
+            }
+        )
+
+    if not actions:
+        body.append(
+            {
+                "type": "TextBlock",
+                "text": (
+                    "Artifact links are not configured. "
+                    "Set published URLs in _runtime/published_artifact_links.json."
+                ),
+                "isSubtle": True,
+                "spacing": "Medium",
+                "wrap": True,
+            }
+        )
+
+    card: dict[str, Any] = {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.4",
+        "msteams": {"width": "Full"},
+        "body": body,
+    }
+    if actions:
+        card["actions"] = actions
+
     return {
         "type": "message",
         "attachments": [

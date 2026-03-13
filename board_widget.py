@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
+import time
 from datetime import date, datetime, timedelta
 
-from PySide6.QtCore import QMimeData, QPoint, Qt, Signal
+from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (
     QApplication,
@@ -14,52 +16,41 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from models import Truck, TruckKit
+from gantt_overlay import (
+    LASER_START_POSITION,
+    STATUS_COLORS,
+    classify_front_status,
+    expected_position_for_week,
+    normalize_position_span,
+)
+from models import Truck, TruckKit, first_pdf_link
 from stages import STAGE_SEQUENCE, Stage, stage_from_id, stage_label
 
 TRUCK_COL_WIDTH = 200
 STAGE_COL_WIDTH = 190
 ACCENT_COLORS = ["#1F4E79", "#2F6B2F", "#8A5B1F", "#7A2F6B", "#006D77", "#5A4FCF"]
 DRAG_MIME_PREFIX = "kitmove"
-WEEK_LENS_LANE_ORDER = ["late", "this_week", "next", "future", "unplanned"]
-WEEK_LENS_LANE_LABELS = {
-    "late": "Late",
-    "this_week": "This Week",
-    "next": "Next",
-    "future": "Future",
-    "unplanned": "Unplanned",
-}
+SCHEDULE_LANE_ORDER = ["late", "this_week", "next", "future", "unplanned"]
 
 
-def _format_label(value: str) -> str:
-    return value.replace("_", " ").title()
+def _hex_to_rgb(value: str) -> tuple[int, int, int]:
+    text = str(value or "").strip().lstrip("#")
+    if len(text) != 6:
+        return (148, 163, 184)
+    return (int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16))
+
+
+def _rgba(value: str, alpha: int) -> str:
+    red, green, blue = _hex_to_rgb(value)
+    return f"rgba({red}, {green}, {blue}, {max(0, min(255, int(alpha)))})"
+
+
+def _neutral_card_color() -> str:
+    return "#94A3B8"
 
 
 def _normalize_kit_name(value: str) -> str:
     return str(value or "").strip().lower()
-
-
-class _ClickableLabel(QLabel):
-    clicked = Signal()
-
-    def mouseReleaseEvent(self, event):  # type: ignore[override]
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit()
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
-    def mousePressEvent(self, event):  # type: ignore[override]
-        if event.button() == Qt.LeftButton:
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-
-def _iso_week_start(value: float, year: int | None = None) -> str:
-    target_year = int(year or datetime.now().year)
-    monday = _resolve_week_monday(value=value, base_year=target_year)
-    return monday.strftime("%b %d, %Y")
 
 
 def _calendar_year_from_date(value: str) -> int | None:
@@ -93,19 +84,10 @@ def _resolve_week_parts(value: float, base_year: int) -> tuple[int, int, float]:
     return (year, week, fraction)
 
 
-def _resolve_week_monday(value: float, base_year: int) -> date:
-    year, week, _fraction = _resolve_week_parts(value=value, base_year=base_year)
-    return date.fromisocalendar(year, week, 1)
-
-
 def _resolve_week_point_date(value: float, base_year: int) -> date:
     year, week, fraction = _resolve_week_parts(value=value, base_year=base_year)
     monday = date.fromisocalendar(year, week, 1)
     return monday + timedelta(days=(fraction * 7.0))
-
-
-def _pdf_link_count(raw_links: str) -> int:
-    return sum(1 for part in str(raw_links).replace(";", "\n").splitlines() if part.strip())
 
 
 def _clear_layout(layout: QVBoxLayout) -> None:
@@ -143,16 +125,11 @@ def _decode_drag_payload(payload: str) -> tuple[int, int] | None:
 
 class KitCard(QFrame):
     clicked = Signal(int)
-    tail_forward_requested = Signal(int)
 
     def __init__(
         self,
         kit: TruckKit,
-        accent_color: str,
-        release_hold_weeks: float | None,
-        stage_window: tuple[float, float] | None = None,
-        calendar_year: int | None = None,
-        week_bucket: str | None = None,
+        state_color: str | None = None,
         dark_mode: bool = False,
         parent: QWidget | None = None,
     ):
@@ -161,38 +138,40 @@ class KitCard(QFrame):
         self._press_pos: QPoint | None = None
         self._drag_started = False
         self._dark_mode = bool(dark_mode)
+        self._click_count = 0
+        self._last_click_ts = 0.0
+        self._single_click_timer = QTimer(self)
+        self._single_click_timer.setSingleShot(True)
+        self._single_click_timer.setInterval(QApplication.doubleClickInterval())
+        self._single_click_timer.timeout.connect(self._flush_pending_clicks)
         self.setCursor(Qt.OpenHandCursor)
         self.setAcceptDrops(True)
 
         front_stage = stage_from_id(kit.front_stage_id)
-        back_stage = stage_from_id(kit.back_stage_id)
         is_complete = front_stage == Stage.COMPLETE
+        card_color = str(state_color or _neutral_card_color()).strip() or _neutral_card_color()
         if self._dark_mode:
             if is_complete:
                 border_color = "#3A516A"
                 border_width = 1
                 background_color = "rgba(12, 25, 39, 225)"
                 title_color = "#8FA9C0"
-                meta_color = "#7392AA"
             else:
-                border_color = accent_color if kit.is_main_kit else "#4C6780"
+                border_color = card_color
                 border_width = 2 if kit.is_main_kit else 1
-                background_color = "rgba(7, 18, 30, 235)"
-                title_color = "#D7EEFF"
-                meta_color = "#9AB8CD"
+                background_color = _rgba(card_color, 58)
+                title_color = "#F8FAFC"
         else:
             if is_complete:
                 border_color = "#D1D5DB"
                 border_width = 1
                 background_color = "#F8FAFC"
                 title_color = "#64748B"
-                meta_color = "#94A3B8"
             else:
-                border_color = accent_color if kit.is_main_kit else "#C6CDD4"
+                border_color = card_color
                 border_width = 2 if kit.is_main_kit else 1
-                background_color = "#FFFFFF"
-                title_color = "#1F2933"
-                meta_color = "#4F5D6B"
+                background_color = _rgba(card_color, 24)
+                title_color = card_color
 
         self.setStyleSheet(
             f"""
@@ -213,90 +192,7 @@ class KitCard(QFrame):
         title_label.setWordWrap(True)
         title_label.setStyleSheet(f"font-weight: 700; color: {title_color};")
 
-        meta_label = QLabel(_format_label(kit.release_state))
-        meta_label.setWordWrap(True)
-        meta_label.setStyleSheet(f"font-size: 10px; color: {meta_color};")
-
         layout.addWidget(title_label)
-        layout.addWidget(meta_label)
-
-        if back_stage != front_stage:
-            tail_label = _ClickableLabel(f"TAIL @ {stage_label(back_stage).upper()}")
-            tail_label.setCursor(Qt.PointingHandCursor)
-            tail_label.setAlignment(Qt.AlignCenter)
-            tail_label.setWordWrap(True)
-            if self._dark_mode:
-                tail_label.setStyleSheet(
-                    """
-                    QLabel {
-                        font-size: 11px;
-                        font-weight: 800;
-                        letter-spacing: 0.5px;
-                        color: #FFB3A3;
-                        background-color: rgba(94, 24, 35, 210);
-                        border: 1px solid #FF7D98;
-                        border-radius: 4px;
-                        padding: 2px 6px;
-                    }
-                    """
-                )
-            else:
-                tail_label.setStyleSheet(
-                    """
-                    QLabel {
-                        font-size: 11px;
-                        font-weight: 800;
-                        letter-spacing: 0.5px;
-                        color: #7C2D12;
-                        background-color: #FEE2E2;
-                        border: 1px solid #FB7185;
-                        border-radius: 4px;
-                        padding: 2px 6px;
-                    }
-                    """
-                )
-            layout.addWidget(tail_label)
-            if kit.id is not None:
-                tail_label.clicked.connect(self._on_tail_forward_clicked)
-
-        if release_hold_weeks is not None and not is_complete:
-            hold_label = QLabel(f"ENG HOLD: {release_hold_weeks:.1f} week(s) past planned start")
-            if self._dark_mode:
-                hold_label.setStyleSheet("font-size: 10px; font-weight: 700; color: #FF8B8B;")
-            else:
-                hold_label.setStyleSheet("font-size: 10px; font-weight: 700; color: #B91C1C;")
-            hold_label.setWordWrap(True)
-            layout.addWidget(hold_label)
-
-        if stage_window is not None and not is_complete:
-            start_date = _iso_week_start(stage_window[0], calendar_year)
-            end_date = _iso_week_start(stage_window[1], calendar_year)
-            week_text = f"Plan: week of {start_date} to week of {end_date}"
-            if week_bucket and week_bucket in WEEK_LENS_LANE_LABELS:
-                week_text = f"{week_text} ({WEEK_LENS_LANE_LABELS[week_bucket]})"
-            week_label = QLabel(week_text)
-            week_label.setWordWrap(True)
-            if week_bucket == "late":
-                if self._dark_mode:
-                    week_label.setStyleSheet("font-size: 10px; font-weight: 700; color: #FF8B8B;")
-                else:
-                    week_label.setStyleSheet("font-size: 10px; font-weight: 700; color: #B91C1C;")
-            else:
-                if self._dark_mode:
-                    week_label.setStyleSheet("font-size: 10px; color: #9DB9CF;")
-                else:
-                    week_label.setStyleSheet("font-size: 10px; color: #334155;")
-            layout.addWidget(week_label)
-
-        pdf_link_count = _pdf_link_count(kit.pdf_links)
-        if pdf_link_count > 0:
-            pdf_label = QLabel(f"PDF Link(s): {pdf_link_count}")
-            pdf_label.setWordWrap(True)
-            if self._dark_mode:
-                pdf_label.setStyleSheet("font-size: 10px; color: #6CC3FF;")
-            else:
-                pdf_label.setStyleSheet("font-size: 10px; color: #1D4ED8;")
-            layout.addWidget(pdf_label)
 
         if kit.blocker.strip():
             blocker_label = QLabel(f"Blocker: {kit.blocker.strip()}")
@@ -306,11 +202,6 @@ class KitCard(QFrame):
             else:
                 blocker_label.setStyleSheet("font-size: 10px; color: #A53E2C;")
             layout.addWidget(blocker_label)
-
-    def _on_tail_forward_clicked(self) -> None:
-        if self._kit.id is None:
-            return
-        self.tail_forward_requested.emit(int(self._kit.id))
 
     def mousePressEvent(self, event):  # type: ignore[override]
         if event.button() == Qt.LeftButton and self._kit.id is not None:
@@ -343,11 +234,42 @@ class KitCard(QFrame):
     def mouseReleaseEvent(self, event):  # type: ignore[override]
         if event.button() == Qt.LeftButton:
             if not self._drag_started and self._kit.id is not None:
-                self.clicked.emit(self._kit.id)
+                self._register_click()
             self._press_pos = None
             self._drag_started = False
             self.setCursor(Qt.OpenHandCursor)
         super().mouseReleaseEvent(event)
+
+    def _register_click(self) -> None:
+        now = time.monotonic()
+        double_click_window = float(QApplication.doubleClickInterval()) / 1000.0
+        if (now - self._last_click_ts) > double_click_window:
+            self._click_count = 0
+        self._last_click_ts = now
+        self._click_count += 1
+
+        if self._click_count >= 2:
+            self._single_click_timer.stop()
+            self._click_count = 0
+            self._open_pdf_link()
+            return
+
+        self._single_click_timer.start()
+
+    def _flush_pending_clicks(self) -> None:
+        click_count = self._click_count
+        self._click_count = 0
+        if click_count > 0 and self._kit.id is not None:
+            self.clicked.emit(int(self._kit.id))
+
+    def _open_pdf_link(self) -> None:
+        link = _first_pdf_link(self._kit.pdf_links)
+        if not link or not hasattr(os, "startfile"):
+            return
+        try:
+            os.startfile(link)  # type: ignore[attr-defined]
+        except OSError:
+            return
 
     def _find_stage_drop_zone(self):
         widget = self.parentWidget()
@@ -507,15 +429,12 @@ class StageForwardFrame(QFrame):
 class TruckRowWidget(QFrame):
     kit_selected = Signal(int)
     kit_stage_dropped = Signal(int, int)
-    kit_tail_forward_requested = Signal(int)
 
     def __init__(
         self,
         truck: Truck,
         accent_color: str,
-        planned_start_week: float | None,
         kit_release_hold_weeks_by_id: dict[int, float],
-        week_lens_enabled: bool = False,
         current_week: float | None = None,
         kit_stage_windows_by_truck: dict[tuple[int, str, int], tuple[float, float]] | None = None,
         dark_mode: bool = False,
@@ -524,7 +443,6 @@ class TruckRowWidget(QFrame):
         super().__init__(parent)
         self._accent_color = accent_color
         self._hold_weeks_by_id = kit_release_hold_weeks_by_id
-        self._week_lens_enabled = week_lens_enabled
         self._current_week = current_week
         self._kit_stage_windows_by_truck = kit_stage_windows_by_truck or {}
         self._truck_id = int(truck.id or -1)
@@ -561,18 +479,6 @@ class TruckRowWidget(QFrame):
         else:
             truck_label.setStyleSheet("font-weight: 700; color: #0F172A;")
         truck_info_layout.addWidget(truck_label)
-
-        if planned_start_week is not None:
-            schedule_label = QLabel(
-                f"Planned Start: week of {_iso_week_start(planned_start_week, self._calendar_year)}"
-            )
-            schedule_label.setWordWrap(True)
-            schedule_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            if self._dark_mode:
-                schedule_label.setStyleSheet("font-size: 10px; color: #96B5CD;")
-            else:
-                schedule_label.setStyleSheet("font-size: 10px; color: #475569;")
-            truck_info_layout.addWidget(schedule_label)
 
         if str(truck.client).strip():
             client_label = QLabel(f"Client: {truck.client.strip()}")
@@ -646,8 +552,8 @@ class TruckRowWidget(QFrame):
                     hint_label.setStyleSheet("font-size: 9px; color: #64748B;")
                 drop_hint_layout.addWidget(hint_label)
                 stage_layout.addWidget(drop_hint)
-            elif self._week_lens_enabled and stage != Stage.COMPLETE:
-                self._add_cards_week_lens(stage_layout, stage_kits, stage_id, stage_box)
+            elif stage != Stage.COMPLETE:
+                self._add_cards_bucketed(stage_layout, stage_kits, stage_id, stage_box)
             else:
                 self._add_cards_flat(stage_layout, stage_kits, stage_id)
             stage_layout.addStretch(1)
@@ -657,7 +563,7 @@ class TruckRowWidget(QFrame):
         key = (self._truck_id, _normalize_kit_name(kit.kit_name), stage_id)
         return self._kit_stage_windows_by_truck.get(key)
 
-    def _week_bucket_for_kit(self, kit: TruckKit, stage_id: int) -> str:
+    def _schedule_bucket_for_kit(self, kit: TruckKit, stage_id: int) -> str:
         if stage_from_id(kit.front_stage_id) == Stage.COMPLETE:
             return "unplanned"
 
@@ -696,41 +602,73 @@ class TruckRowWidget(QFrame):
         self,
         kit: TruckKit,
         stage_id: int,
-        week_bucket: str | None = None,
     ) -> KitCard:
-        hold_weeks = None
-        if kit.id is not None:
-            hold_weeks = self._hold_weeks_by_id.get(kit.id)
         card = KitCard(
             kit=kit,
-            accent_color=self._accent_color,
-            release_hold_weeks=hold_weeks,
-            stage_window=self._resolve_stage_window(kit, stage_id),
-            calendar_year=self._calendar_year,
-            week_bucket=week_bucket,
+            state_color=self._status_color_for_kit(kit),
             dark_mode=self._dark_mode,
         )
         card.clicked.connect(self.kit_selected.emit)
-        card.tail_forward_requested.connect(self.kit_tail_forward_requested.emit)
         return card
+
+    def _status_color_for_kit(self, kit: TruckKit) -> str | None:
+        if self._current_week is None:
+            return None
+
+        front_stage = stage_from_id(kit.front_stage_id)
+        if front_stage == Stage.COMPLETE:
+            return None
+
+        baseline_windows: dict[Stage, tuple[float, float]] = {}
+        for stage in (Stage.LASER, Stage.BEND, Stage.WELD):
+            bounds = self._resolve_stage_window(kit, int(stage))
+            if bounds is None:
+                continue
+            baseline_windows[stage] = (float(bounds[0]), float(bounds[1]))
+        if not baseline_windows:
+            return None
+
+        released = bool(
+            kit.release_state == "released"
+            or front_stage > Stage.RELEASE
+        )
+        blocked = bool(str(getattr(kit, "blocker", "") or "").strip())
+        front_position, _back_position = normalize_position_span(
+            getattr(kit, "front_position", None),
+            getattr(kit, "back_position", None),
+            front_stage_id=front_stage,
+            back_stage_id=stage_from_id(kit.back_stage_id),
+        )
+        expected_position = expected_position_for_week(
+            current_week=float(self._current_week),
+            baseline_windows=baseline_windows,
+        )
+        display_front_position = LASER_START_POSITION if not released else front_position
+        _status_key, status_color = classify_front_status(
+            released=released,
+            blocked=blocked,
+            expected_position=expected_position,
+            front_position=display_front_position,
+        )
+        return status_color
 
     def _add_cards_flat(self, stage_layout: QVBoxLayout, stage_kits: list[TruckKit], stage_id: int) -> None:
         for kit in stage_kits:
             stage_layout.addWidget(self._create_kit_card(kit=kit, stage_id=stage_id))
 
-    def _add_cards_week_lens(
+    def _add_cards_bucketed(
         self,
         stage_layout: QVBoxLayout,
         stage_kits: list[TruckKit],
         stage_id: int,
         stage_box: StageDropZone,
     ) -> None:
-        buckets = {name: [] for name in WEEK_LENS_LANE_ORDER}
+        buckets = {name: [] for name in SCHEDULE_LANE_ORDER}
         for kit in stage_kits:
-            bucket = self._week_bucket_for_kit(kit, stage_id)
+            bucket = self._schedule_bucket_for_kit(kit, stage_id)
             buckets.setdefault(bucket, []).append(kit)
 
-        for bucket_name in WEEK_LENS_LANE_ORDER:
+        for bucket_name in SCHEDULE_LANE_ORDER:
             bucket_kits = buckets.get(bucket_name, [])
             if not bucket_kits:
                 continue
@@ -760,26 +698,11 @@ class TruckRowWidget(QFrame):
             lane_layout.setContentsMargins(3, 3, 3, 3)
             lane_layout.setSpacing(3)
 
-            title_label = QLabel(f"{WEEK_LENS_LANE_LABELS[bucket_name]} ({len(bucket_kits)})")
-            title_label.setWordWrap(True)
-            if bucket_name == "late":
-                if self._dark_mode:
-                    title_label.setStyleSheet("font-size: 9px; font-weight: 700; color: #FF8B8B;")
-                else:
-                    title_label.setStyleSheet("font-size: 9px; font-weight: 700; color: #B91C1C;")
-            else:
-                if self._dark_mode:
-                    title_label.setStyleSheet("font-size: 9px; font-weight: 700; color: #A7C5DA;")
-                else:
-                    title_label.setStyleSheet("font-size: 9px; font-weight: 700; color: #334155;")
-            lane_layout.addWidget(title_label)
-
             for kit in bucket_kits:
                 lane_layout.addWidget(
                     self._create_kit_card(
                         kit=kit,
                         stage_id=stage_id,
-                        week_bucket=bucket_name,
                     )
                 )
 
@@ -789,11 +712,9 @@ class TruckRowWidget(QFrame):
 class BoardWidget(QWidget):
     kit_selected = Signal(int)
     kit_stage_drop_requested = Signal(int, int)
-    kit_tail_forward_requested = Signal(int)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self._week_lens_enabled = False
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -814,19 +735,14 @@ class BoardWidget(QWidget):
 
         root_layout.addWidget(self._scroll_area)
 
-    def set_week_lens_enabled(self, enabled: bool) -> None:
-        self._week_lens_enabled = bool(enabled)
-
     def set_data(
         self,
         trucks: list[Truck],
-        truck_planned_start_week_by_id: dict[int, float] | None = None,
         kit_release_hold_weeks_by_id: dict[int, float] | None = None,
         current_week: float | None = None,
         kit_stage_windows_by_truck: dict[tuple[int, str, int], tuple[float, float]] | None = None,
     ) -> None:
         _clear_layout(self._content_layout)
-        planned_start_map = truck_planned_start_week_by_id or {}
         hold_weeks_map = kit_release_hold_weeks_by_id or {}
         stage_windows_map = kit_stage_windows_by_truck or {}
 
@@ -840,22 +756,15 @@ class BoardWidget(QWidget):
 
         for index, truck in enumerate(trucks):
             accent_color = ACCENT_COLORS[index % len(ACCENT_COLORS)]
-            planned_start_week = None
-            if truck.id is not None:
-                planned_start_week = planned_start_map.get(truck.id)
-
             row_widget = TruckRowWidget(
                 truck=truck,
                 accent_color=accent_color,
-                planned_start_week=planned_start_week,
                 kit_release_hold_weeks_by_id=hold_weeks_map,
-                week_lens_enabled=self._week_lens_enabled,
                 current_week=current_week,
                 kit_stage_windows_by_truck=stage_windows_map,
             )
             row_widget.kit_selected.connect(self.kit_selected.emit)
             row_widget.kit_stage_dropped.connect(self.kit_stage_drop_requested.emit)
-            row_widget.kit_tail_forward_requested.connect(self.kit_tail_forward_requested.emit)
             self._content_layout.addWidget(row_widget)
 
         self._content_layout.addStretch(1)
