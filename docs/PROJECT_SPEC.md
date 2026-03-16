@@ -5,12 +5,12 @@ This project is the Fabrication Flow Dashboard for tracking fabrication status b
 
 Primary goals:
 - Keep a live board of active truck kits by stage.
-- Surface release/flow risk signals (late release, blockers, bend/weld health).
+- Surface release/flow risk signals (late release, blockers, laser/brake/weld health).
 - Publish concise snapshot cards to Microsoft Teams under payload limits.
 
 ## 2. Scope
 In scope:
-- Desktop UI (PySide6) for operations planning and daily execution.
+- Desktop UI (PySide6) for daily fabrication execution and schedule review.
 - Local SQLite persistence for truck/kit state.
 - CSV truck registry sync on startup.
 - Gantt render for scheduled vs actual progression.
@@ -26,7 +26,7 @@ Out of scope:
 ## 3.1 Main Modules
 - `app.py`: application entrypoint and startup sequence.
 - `main_window.py`: main UI shell, interaction wiring, Teams publishing, gantt panel.
-- `board_widget.py`: stage board rendering and drag/drop interactions.
+- `board_widget.py`: stage board rendering, drag/drop interactions, and card gesture handling.
 - `database.py`: SQLite schema lifecycle and CRUD operations.
 - `schedule.py`: schedule insights generation from config + live truck state.
 - `metrics.py`: health/risk metrics and attention signal computation.
@@ -53,7 +53,7 @@ Canonical stage sequence:
 - `Truck`
   - identity, display/order metadata, planned start date, visibility.
 - `TruckKit`
-  - release state, front/back stage span (`front_stage_id`, `back_stage_id`), blocker, PDF links, active flag.
+  - release state, front/back stage span (`front_stage_id`, `back_stage_id`), fabrication positions (`front_position`, `back_position`), blocker, single PDF link, active flag.
 - `KitTemplate`
   - default kit definitions used when creating/syncing trucks.
 
@@ -64,22 +64,27 @@ Canonical stage sequence:
 2. Sync CSV truck registry into local DB.
 3. Load active/visible trucks and kit state.
 4. Build schedule insights + metrics.
-5. Render board, gantt, and summary panels.
+5. Render board, top traffic signals, attention panel, and gantt.
 
 ## 5.2 Kit Movement
 - Drag/drop updates front stage.
 - Stage span is normalized so `back_stage_id` never exceeds `front_stage_id`.
 - Moving fabrication-forward can auto-normalize release state to `released`.
+- Card single-click opens the kit edit dialog.
+- Card double-click opens the linked PDF directly, if present.
 
-## 5.3 Tail Collapse
-- Tail collapse action advances `back_stage_id` toward `front_stage_id`.
-- Used to indicate upstream work completion and reduce trailing span.
+## 5.3 Kit Editing
+- Head/tail fabrication positions are edited in the popup dialog, not inline on the board.
+- Position display uses the five-step stage scale rendered as `0%`, `10%`, `50%`, `90%`, `100%`.
+- Kit PDF handling is intentionally single-file only.
 
 ## 6. Gantt Specification
 
 ## 6.1 Windowing
-- Current gantt view is intentionally clamped to current week +/- 8 weeks for legibility and payload stability.
-- Weekly tick labels are displayed across this fixed window.
+- `ALL` is the master gantt and defines the shared viewport.
+- Per-truck gantt tabs reuse the same week range, label framing, and chart canvas size as `ALL`.
+- The visible range is anchored to the current week start and extends forward 8 weeks, with small side padding.
+- Tick labels display in `mm/dd/yy` format.
 
 ## 6.2 Row Eligibility
 A kit row is rendered only when all are true:
@@ -94,20 +99,42 @@ A kit row is rendered only when all are true:
 - Upstream completed stages are hidden when `stage < tail_stage`.
 
 ## 6.4 Actual Marker Rules
-- Released kit: marker follows actual front-stage window center.
+- Released kit: marker follows actual front-stage position within the stage window.
 - Unreleased kit:
-  - Not late: marker sits on laser trailing edge.
-  - Late: marker sits at laser start.
-  - Late adds a red backward arrow from current-week line to marker.
+  - marker sits at laser entry until release.
+  - >1 week before due = black
+  - within 1 week of due = yellow
+  - overdue = red
+- Released kit color rules:
+  - within `+/-1 week` of the master timeline = green
+  - >1 week late = yellow
+  - >1 week ahead = blue
+  - special case: late released final-stage `WELD` never renders green; it stays yellow
+- Late rows can still show a catch-up arrow to `TODAY` even when the dot remains green inside the tolerance band.
 
 ## 6.5 Tail Arrow Rules
 - If `tail_stage < actual_stage`, a gray tail arrow is drawn from tail position toward actual marker.
 - Special case: when tail is `RELEASE`, arrow starts at laser start.
 
 ## 6.6 Visual Aids
-- Red dashed vertical line = current week.
-- Faint weekly vertical grid lines.
+- Red dashed vertical line = `TODAY`, clipped to the active row area only.
+- Faint weekly vertical guides, clipped to the active row area only.
 - Horizontal separators between rows for readability.
+- One row of clean whitespace is reserved above the gantt rows.
+
+## 6.7 Pane and Tab Sizing
+- The gantt pane is locked and auto-sized from the `ALL` gantt only.
+- Per-truck tabs are rendered inside the same locked gantt frame and should not change splitter sizing.
+- Signal-detail changes or attention-panel text should not resize the gantt pane.
+
+## 6.8 Row Label Framing
+- Per-truck gantts use the same truck/kit label padding widths as the `ALL` gantt.
+- This keeps the left label gutter stable so the time axis does not shift between tabs.
+
+## 6.9 Color Source of Truth
+- Gantt front-dot coloring is the source of truth.
+- Board card coloring follows the same status classification when a schedule anchor exists.
+- If no usable schedule anchor exists, board cards fall back to neutral gray.
 
 ## 7. Teams Adaptive Card Publishing
 
@@ -124,9 +151,10 @@ The dashboard webhook payload is a summary shell:
   - `Confirmed published snapshot`
 - Top summary facts:
   - Active Trucks
-  - Next Main Kit Released
-  - Bend Buffer
-  - Weld Feed
+  - Laser
+  - Brake
+  - Weld A
+  - Weld B
   - Kits Behind Schedule
   - Blocked Kits
 - Risk summary:
@@ -169,6 +197,9 @@ Generated payloads are written to:
 - Per-kit operation windows.
 - Operation standards and cycle settings.
 
+Hardcoded operational routing currently includes:
+- `WELD B` feed kits: `Console`, `Interior`, `Exterior`
+
 Teams artifact link resolution supports:
 - `_runtime/published_artifact_links.json` keys:
   - `summary_html_url`
@@ -181,9 +212,10 @@ Teams artifact link resolution supports:
 
 ## 9. Operational Notes
 - This project currently uses a local-first architecture; runtime files under `_runtime` are operational artifacts and may change frequently.
-- `main_window.py` and `teams_card.py` include inline comments documenting key gantt exception behavior and payload fallback behavior.
+- The main dashboard view is the only in-app page; older "tab" terminology is obsolete.
+- `main_window.py`, `gantt_overlay.py`, and `teams_card.py` include inline comments documenting gantt behavior and payload fallback behavior.
 
 ## 10. Recommended Next Improvements
 - Add automated payload-size tests for Teams builders.
-- Add unit tests for gantt row eligibility and marker placement rules.
+- Add unit tests for gantt row eligibility, viewport locking, and status-color rules.
 - Add a dedicated docs page for publish/degradation decision paths.
