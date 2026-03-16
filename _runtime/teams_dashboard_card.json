@@ -14,752 +14,141 @@
         "body": [
           {
             "type": "TextBlock",
-            "text": "Fabrication Flow Dashboard - Live Board View",
+            "text": "Fabrication Status",
             "size": "Large",
             "weight": "Bolder",
             "wrap": true
           },
           {
             "type": "TextBlock",
-            "text": "Generated: 2026-03-11 15:07 Eastern Summer Time",
+            "text": "Published: 2026-03-12 17:40 Eastern Summer Time",
             "isSubtle": true,
             "spacing": "None",
             "wrap": true
           },
           {
             "type": "TextBlock",
-            "text": "Week of Mar 09, 2026 | Engineering Holds 4 | Blocked Kits 1",
-            "wrap": true,
-            "spacing": "Small"
-          },
-          {
-            "type": "ColumnSet",
-            "columns": [
-              {
-                "type": "Column",
-                "width": "stretch",
-                "items": [
-                  {
-                    "type": "TextBlock",
-                    "text": "Active Trucks",
-                    "size": "Small",
-                    "isSubtle": true,
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "5",
-                    "weight": "Bolder",
-                    "size": "Medium",
-                    "color": "Good",
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Visible active trucks on the board.",
-                    "size": "Small",
-                    "wrap": true,
-                    "spacing": "None"
-                  }
-                ]
-              },
-              {
-                "type": "Column",
-                "width": "stretch",
-                "items": [
-                  {
-                    "type": "TextBlock",
-                    "text": "Active Kits",
-                    "size": "Small",
-                    "isSubtle": true,
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "25",
-                    "weight": "Bolder",
-                    "size": "Medium",
-                    "color": "Good",
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Active kits across all displayed trucks.",
-                    "size": "Small",
-                    "wrap": true,
-                    "spacing": "None"
-                  }
-                ]
-              },
-              {
-                "type": "Column",
-                "width": "stretch",
-                "items": [
-                  {
-                    "type": "TextBlock",
-                    "text": "Engineering Holds",
-                    "size": "Small",
-                    "isSubtle": true,
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "4",
-                    "weight": "Bolder",
-                    "size": "Medium",
-                    "color": "Attention",
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Not released past planned start.",
-                    "size": "Small",
-                    "wrap": true,
-                    "spacing": "None"
-                  }
-                ]
-              },
-              {
-                "type": "Column",
-                "width": "stretch",
-                "items": [
-                  {
-                    "type": "TextBlock",
-                    "text": "Blocked Kits",
-                    "size": "Small",
-                    "isSubtle": true,
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "1",
-                    "weight": "Bolder",
-                    "size": "Medium",
-                    "color": "Attention",
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Kits with blocker text.",
-                    "size": "Small",
-                    "wrap": true,
-                    "spacing": "None"
-                  }
-                ]
-              }
-            ],
-            "spacing": "Medium"
-          },
-          {
-            "type": "ColumnSet",
-            "columns": [
-              {
-                "type": "Column",
-                "width": "stretch",
-                "items": [
-                  {
-                    "type": "TextBlock",
-                    "text": "Next Body",
-                    "size": "Small",
-                    "isSubtle": true,
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Ready",
-                    "weight": "Bolder",
-                    "size": "Medium",
-                    "color": "Good",
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Next Body release is aligned.",
-                    "size": "Small",
-                    "wrap": true,
-                    "spacing": "None"
-                  }
-                ]
-              },
-              {
-                "type": "Column",
-                "width": "stretch",
-                "items": [
-                  {
-                    "type": "TextBlock",
-                    "text": "Bend Buffer",
-                    "size": "Small",
-                    "isSubtle": true,
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "WATCH",
-                    "weight": "Bolder",
-                    "size": "Medium",
-                    "color": "Warning",
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "1 kit(s) in laser/bend.",
-                    "size": "Small",
-                    "wrap": true,
-                    "spacing": "None"
-                  }
-                ]
-              },
-              {
-                "type": "Column",
-                "width": "stretch",
-                "items": [
-                  {
-                    "type": "TextBlock",
-                    "text": "Weld Feed",
-                    "size": "Small",
-                    "isSubtle": true,
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "HEALTHY",
-                    "weight": "Bolder",
-                    "size": "Medium",
-                    "color": "Good",
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Score 6.0.",
-                    "size": "Small",
-                    "wrap": true,
-                    "spacing": "None"
-                  }
-                ]
-              }
-            ],
-            "spacing": "Medium"
+            "text": "Confirmed published snapshot",
+            "isSubtle": true,
+            "spacing": "None",
+            "wrap": true
           },
           {
             "type": "TextBlock",
-            "text": "Scheduled vs Actual Gantt (Body)",
+            "text": "Top Summary",
+            "weight": "Bolder",
+            "spacing": "Medium",
+            "wrap": true
+          },
+          {
+            "type": "FactSet",
+            "facts": [
+              {
+                "title": "Active Trucks",
+                "value": "4"
+              },
+              {
+                "title": "Next Main Kit Released",
+                "value": "No"
+              },
+              {
+                "title": "Bend Buffer",
+                "value": "Low"
+              },
+              {
+                "title": "Weld Feed",
+                "value": "Healthy"
+              },
+              {
+                "title": "Kits Behind Schedule",
+                "value": "7"
+              },
+              {
+                "title": "Blocked Kits",
+                "value": "1"
+              }
+            ],
+            "spacing": "Small"
+          },
+          {
+            "type": "TextBlock",
+            "text": "Risk Summary",
             "weight": "Bolder",
             "spacing": "Medium",
             "wrap": true
           },
           {
             "type": "TextBlock",
-            "text": "Legend: R release, L laser, B bend, W weld, C complete, | current week",
-            "isSubtle": true,
-            "spacing": "None",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "Range: W3.0 to W55.0",
-            "isSubtle": true,
-            "spacing": "None",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "F55974",
-            "weight": "Bolder",
+            "text": "- Next Body not released: F56139 Body is not released.",
+            "color": "Attention",
             "spacing": "Small",
             "wrap": true
           },
           {
             "type": "TextBlock",
-            "text": "Sched : ....|..................BWW",
-            "fontType": "Monospace",
-            "spacing": "None",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "Actual: ....|....................C",
-            "fontType": "Monospace",
-            "spacing": "None",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "F55985",
-            "weight": "Bolder",
+            "text": "- Engineering release is holding work start: 3 kit(s) past planned start; oldest 2.0 week(s) (F55334 Console).",
+            "color": "Attention",
             "spacing": "Small",
             "wrap": true
           },
           {
             "type": "TextBlock",
-            "text": "Sched : WWW.|.....................",
-            "fontType": "Monospace",
-            "spacing": "None",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "Actual: .W..|.....................",
-            "fontType": "Monospace",
-            "spacing": "None",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "F55334",
-            "weight": "Bolder",
+            "text": "- Bend buffer low: Less than 3 released kit(s) are in laser/bend.",
+            "color": "Warning",
             "spacing": "Small",
             "wrap": true
           },
           {
             "type": "TextBlock",
-            "text": "Sched : ..WWW.....................",
-            "fontType": "Monospace",
-            "spacing": "None",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "Actual: ..B.|.....................",
-            "fontType": "Monospace",
-            "spacing": "None",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "F56139",
+            "text": "Per-Truck Summary",
             "weight": "Bolder",
+            "spacing": "Medium",
+            "wrap": true
+          },
+          {
+            "type": "TextBlock",
+            "text": "- F55334 - Weld - Behind - 2 kit(s) late release.",
+            "color": "Attention",
             "spacing": "Small",
             "wrap": true
           },
           {
             "type": "TextBlock",
-            "text": "Sched : ...LWW....................",
-            "fontType": "Monospace",
-            "spacing": "None",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "Actual: ...R|.....................",
-            "fontType": "Monospace",
-            "spacing": "None",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "F56724",
-            "weight": "Bolder",
+            "text": "- F55985 - Weld - Behind - 1 blocked kit(s).",
+            "color": "Attention",
             "spacing": "Small",
             "wrap": true
           },
           {
             "type": "TextBlock",
-            "text": "Sched : ....|WWW..................",
-            "fontType": "Monospace",
-            "spacing": "None",
+            "text": "- F56139 - Release - Behind - 1 kit(s) late release.",
+            "color": "Attention",
+            "spacing": "Small",
             "wrap": true
           },
           {
             "type": "TextBlock",
-            "text": "Actual: ....|R....................",
-            "fontType": "Monospace",
-            "spacing": "None",
+            "text": "- F56724 - Release - In Sync - None.",
+            "color": "Good",
+            "spacing": "Small",
             "wrap": true
+          }
+        ],
+        "actions": [
+          {
+            "type": "Action.OpenUrl",
+            "title": "Open Full Dashboard",
+            "url": "file:///C:/Tools/fabrication_flow_dashboard/_runtime/published/summary.html"
           },
           {
-            "type": "Container",
-            "id": "attention_section",
-            "isVisible": true,
-            "items": [
-              {
-                "type": "TextBlock",
-                "text": "Live Attention Queue",
-                "weight": "Bolder",
-                "spacing": "Medium",
-                "wrap": true
-              },
-              {
-                "type": "TextBlock",
-                "text": "- Engineering release is holding work start: 4 kit(s) past planned start; oldest 1.9 week(s) (F55334 Console Pack).",
-                "color": "Attention",
-                "wrap": true,
-                "spacing": "Small"
-              }
-            ]
+            "type": "Action.OpenUrl",
+            "title": "Open Gantt Snapshot",
+            "url": "file:///C:/Tools/fabrication_flow_dashboard/_runtime/published/gantt.png"
           },
           {
-            "type": "Container",
-            "id": "truck_lanes_section",
-            "isVisible": true,
-            "items": [
-              {
-                "type": "TextBlock",
-                "text": "Truck Board Lanes",
-                "weight": "Bolder",
-                "spacing": "Medium",
-                "wrap": true
-              },
-              {
-                "type": "Container",
-                "separator": true,
-                "spacing": "Small",
-                "items": [
-                  {
-                    "type": "TextBlock",
-                    "text": "F55974 | Body: Complete (released)",
-                    "weight": "Bolder",
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Stage Load: Release 0 | Laser 0 | Bend 0 | Weld 1 | Complete 4",
-                    "wrap": true,
-                    "spacing": "None"
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Risk: No immediate issue.",
-                    "color": "Good",
-                    "wrap": true,
-                    "spacing": "None"
-                  },
-                  {
-                    "type": "ActionSet",
-                    "actions": [
-                      {
-                        "type": "Action.ToggleVisibility",
-                        "title": "Show/Hide Kit Details",
-                        "targetElements": [
-                          "truck_details_f55974"
-                        ]
-                      }
-                    ],
-                    "spacing": "Small"
-                  },
-                  {
-                    "type": "Container",
-                    "id": "truck_details_f55974",
-                    "isVisible": false,
-                    "items": [
-                      {
-                        "type": "FactSet",
-                        "facts": [
-                          {
-                            "title": "Body",
-                            "value": "released | Complete->Complete"
-                          },
-                          {
-                            "title": "Pumphouse",
-                            "value": "released | Complete->Complete"
-                          },
-                          {
-                            "title": "Console Pack",
-                            "value": "released | Complete->Complete"
-                          },
-                          {
-                            "title": "Interior Pack",
-                            "value": "released | Complete->Complete"
-                          },
-                          {
-                            "title": "Exterior Pack",
-                            "value": "released | Weld->Weld"
-                          }
-                        ],
-                        "spacing": "Small"
-                      }
-                    ]
-                  }
-                ]
-              },
-              {
-                "type": "Container",
-                "separator": true,
-                "spacing": "Small",
-                "items": [
-                  {
-                    "type": "TextBlock",
-                    "text": "F55985 | Body: Weld (released)",
-                    "weight": "Bolder",
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Stage Load: Release 0 | Laser 0 | Bend 0 | Weld 3 | Complete 2",
-                    "wrap": true,
-                    "spacing": "None"
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Risk: Blocked: 1 kit(s) blocked.",
-                    "color": "Attention",
-                    "wrap": true,
-                    "spacing": "None"
-                  },
-                  {
-                    "type": "ActionSet",
-                    "actions": [
-                      {
-                        "type": "Action.ToggleVisibility",
-                        "title": "Show/Hide Kit Details",
-                        "targetElements": [
-                          "truck_details_f55985"
-                        ]
-                      }
-                    ],
-                    "spacing": "Small"
-                  },
-                  {
-                    "type": "Container",
-                    "id": "truck_details_f55985",
-                    "isVisible": false,
-                    "items": [
-                      {
-                        "type": "FactSet",
-                        "facts": [
-                          {
-                            "title": "Body",
-                            "value": "released | Weld->Weld"
-                          },
-                          {
-                            "title": "Pumphouse",
-                            "value": "released | Complete->Complete"
-                          },
-                          {
-                            "title": "Console Pack",
-                            "value": "released | Complete->Complete"
-                          },
-                          {
-                            "title": "Interior Pack",
-                            "value": "released | Weld->Weld"
-                          },
-                          {
-                            "title": "Exterior Pack",
-                            "value": "released | Weld->Release | blocked"
-                          }
-                        ],
-                        "spacing": "Small"
-                      }
-                    ]
-                  }
-                ]
-              },
-              {
-                "type": "Container",
-                "separator": true,
-                "spacing": "Small",
-                "items": [
-                  {
-                    "type": "TextBlock",
-                    "text": "F55334 | Body: Bend (released)",
-                    "weight": "Bolder",
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Stage Load: Release 3 | Laser 0 | Bend 1 | Weld 1 | Complete 0",
-                    "wrap": true,
-                    "spacing": "None"
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Risk: Late Release: 3 kit(s) late release.",
-                    "color": "Attention",
-                    "wrap": true,
-                    "spacing": "None"
-                  },
-                  {
-                    "type": "ActionSet",
-                    "actions": [
-                      {
-                        "type": "Action.ToggleVisibility",
-                        "title": "Show/Hide Kit Details",
-                        "targetElements": [
-                          "truck_details_f55334"
-                        ]
-                      }
-                    ],
-                    "spacing": "Small"
-                  },
-                  {
-                    "type": "Container",
-                    "id": "truck_details_f55334",
-                    "isVisible": false,
-                    "items": [
-                      {
-                        "type": "FactSet",
-                        "facts": [
-                          {
-                            "title": "Body",
-                            "value": "released | Bend->Bend"
-                          },
-                          {
-                            "title": "Pumphouse",
-                            "value": "released | Weld->Weld"
-                          },
-                          {
-                            "title": "Console Pack",
-                            "value": "not released | Release->Release"
-                          },
-                          {
-                            "title": "Interior Pack",
-                            "value": "not released | Release->Release"
-                          },
-                          {
-                            "title": "Exterior Pack",
-                            "value": "not released | Release->Release"
-                          }
-                        ],
-                        "spacing": "Small"
-                      }
-                    ]
-                  }
-                ]
-              },
-              {
-                "type": "Container",
-                "separator": true,
-                "spacing": "Small",
-                "items": [
-                  {
-                    "type": "TextBlock",
-                    "text": "F56139 | Body: Release (not released)",
-                    "weight": "Bolder",
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Stage Load: Release 5 | Laser 0 | Bend 0 | Weld 0 | Complete 0",
-                    "wrap": true,
-                    "spacing": "None"
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Risk: Late Release: 1 kit(s) late release.",
-                    "color": "Attention",
-                    "wrap": true,
-                    "spacing": "None"
-                  },
-                  {
-                    "type": "ActionSet",
-                    "actions": [
-                      {
-                        "type": "Action.ToggleVisibility",
-                        "title": "Show/Hide Kit Details",
-                        "targetElements": [
-                          "truck_details_f56139"
-                        ]
-                      }
-                    ],
-                    "spacing": "Small"
-                  },
-                  {
-                    "type": "Container",
-                    "id": "truck_details_f56139",
-                    "isVisible": false,
-                    "items": [
-                      {
-                        "type": "FactSet",
-                        "facts": [
-                          {
-                            "title": "Body",
-                            "value": "not released | Release->Release"
-                          },
-                          {
-                            "title": "Pumphouse",
-                            "value": "not released | Release->Release"
-                          },
-                          {
-                            "title": "Console Pack",
-                            "value": "not released | Release->Release"
-                          },
-                          {
-                            "title": "Interior Pack",
-                            "value": "not released | Release->Release"
-                          },
-                          {
-                            "title": "Exterior Pack",
-                            "value": "not released | Release->Release"
-                          }
-                        ],
-                        "spacing": "Small"
-                      }
-                    ]
-                  }
-                ]
-              },
-              {
-                "type": "Container",
-                "separator": true,
-                "spacing": "Small",
-                "items": [
-                  {
-                    "type": "TextBlock",
-                    "text": "F56724 | Body: Release (not released)",
-                    "weight": "Bolder",
-                    "wrap": true
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Stage Load: Release 5 | Laser 0 | Bend 0 | Weld 0 | Complete 0",
-                    "wrap": true,
-                    "spacing": "None"
-                  },
-                  {
-                    "type": "TextBlock",
-                    "text": "Risk: No immediate issue.",
-                    "color": "Good",
-                    "wrap": true,
-                    "spacing": "None"
-                  },
-                  {
-                    "type": "ActionSet",
-                    "actions": [
-                      {
-                        "type": "Action.ToggleVisibility",
-                        "title": "Show/Hide Kit Details",
-                        "targetElements": [
-                          "truck_details_f56724"
-                        ]
-                      }
-                    ],
-                    "spacing": "Small"
-                  },
-                  {
-                    "type": "Container",
-                    "id": "truck_details_f56724",
-                    "isVisible": false,
-                    "items": [
-                      {
-                        "type": "FactSet",
-                        "facts": [
-                          {
-                            "title": "Body",
-                            "value": "not released | Release->Release"
-                          },
-                          {
-                            "title": "Pumphouse",
-                            "value": "not released | Release->Release"
-                          },
-                          {
-                            "title": "Console Pack",
-                            "value": "not released | Release->Release"
-                          },
-                          {
-                            "title": "Interior Pack",
-                            "value": "not released | Release->Release"
-                          },
-                          {
-                            "title": "Exterior Pack",
-                            "value": "not released | Release->Release"
-                          }
-                        ],
-                        "spacing": "Small"
-                      }
-                    ]
-                  }
-                ]
-              }
-            ]
+            "type": "Action.OpenUrl",
+            "title": "Open Published JSON",
+            "url": "file:///C:/Tools/fabrication_flow_dashboard/_runtime/published/status.json"
           }
         ]
       }

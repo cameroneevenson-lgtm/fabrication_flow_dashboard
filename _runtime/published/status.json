@@ -1,0 +1,68 @@
+{
+  "published_at_utc": "2026-03-12T21:40:55+00:00",
+  "summary": {
+    "active_trucks": 4,
+    "next_main_kit_released": false,
+    "bend_buffer": "low",
+    "weld_feed": "healthy",
+    "kits_behind_schedule": 7,
+    "late_releases": 3,
+    "blocked_kits": 1
+  },
+  "risk_summary": [
+    {
+      "priority": 100,
+      "title": "Next Body not released",
+      "detail": "F56139 Body is not released."
+    },
+    {
+      "priority": 96,
+      "title": "Engineering release is holding work start",
+      "detail": "3 kit(s) past planned start; oldest 2.0 week(s) (F55334 Console)."
+    },
+    {
+      "priority": 80,
+      "title": "Bend buffer low",
+      "detail": "Less than 3 released kit(s) are in laser/bend."
+    }
+  ],
+  "truck_rows": [
+    {
+      "truck_number": "F55334",
+      "main_stage": "Weld",
+      "sync_state": "Behind",
+      "risk_category": "Late Release",
+      "issue_summary": "2 kit(s) late release.",
+      "tone": "problem"
+    },
+    {
+      "truck_number": "F55985",
+      "main_stage": "Weld",
+      "sync_state": "Behind",
+      "risk_category": "Blocked",
+      "issue_summary": "1 blocked kit(s).",
+      "tone": "problem"
+    },
+    {
+      "truck_number": "F56139",
+      "main_stage": "Release",
+      "sync_state": "Behind",
+      "risk_category": "Late Release",
+      "issue_summary": "1 kit(s) late release.",
+      "tone": "problem"
+    },
+    {
+      "truck_number": "F56724",
+      "main_stage": "Release",
+      "sync_state": "In Sync",
+      "risk_category": "In Sync",
+      "issue_summary": "None.",
+      "tone": "ok"
+    }
+  ],
+  "artifact_links": {
+    "summary_html_url": "file:///C:/Tools/fabrication_flow_dashboard/_runtime/published/summary.html",
+    "gantt_png_url": "file:///C:/Tools/fabrication_flow_dashboard/_runtime/published/gantt.png",
+    "status_json_url": "file:///C:/Tools/fabrication_flow_dashboard/_runtime/published/status.json"
+  }
+}
