@@ -1034,7 +1034,6 @@ class MainWindow(QMainWindow):
         right_column_layout = QVBoxLayout(right_column)
         right_column_layout.setContentsMargins(0, 0, 0, 0)
         right_column_layout.setSpacing(10)
-        right_column_layout.addWidget(self._build_schedule_panel())
         right_column_layout.addWidget(self._build_attention_panel(), 1)
 
         board_gantt_splitter = QSplitter(Qt.Vertical)
@@ -1072,8 +1071,6 @@ class MainWindow(QMainWindow):
             self._update_health_strip(self._dashboard_metrics)
             self._update_attention_panel(self._dashboard_metrics)
             self._update_gantt_panel()
-            if hasattr(self, "_schedule_start_label"):
-                self._update_schedule_panel()
 
     def _apply_visual_mode(self) -> None:
         dark = bool(self._minority_report_mode)
@@ -1234,21 +1231,6 @@ class MainWindow(QMainWindow):
                 """
             )
 
-        if hasattr(self, "_schedule_panel"):
-            self._schedule_panel.setStyleSheet(panel_style)
-        if hasattr(self, "_schedule_title_label"):
-            self._schedule_title_label.setStyleSheet(
-                f"font-size: 16px; font-weight: 700; color: {title_color};"
-            )
-        if hasattr(self, "_schedule_start_label"):
-            self._schedule_start_label.setStyleSheet(f"font-size: 12px; color: {text_color};")
-        if hasattr(self, "_current_week_label"):
-            self._current_week_label.setStyleSheet(f"font-size: 12px; color: {text_color};")
-        if hasattr(self, "_truck_lag_label"):
-            self._truck_lag_label.setStyleSheet(f"font-size: 12px; color: {text_color};")
-        if hasattr(self, "_standards_label"):
-            self._standards_label.setStyleSheet(f"font-size: 11px; color: {muted_color};")
-
         for tile in getattr(self, "_tile_widgets", {}).values():
             frame = tile.get("frame")
             title_label = tile.get("title")
@@ -1298,7 +1280,7 @@ class MainWindow(QMainWindow):
         return mapping
 
     def _build_dashboard_view_state(self, trucks: list[Truck]) -> DashboardViewState:
-        # Build one coherent snapshot so board, metrics, schedule text, and gantt all render from the same state.
+        # Build one coherent snapshot so board, metrics, attention, and gantt all render from the same state.
         ordered_trucks = sort_trucks_natural(list(trucks))
         schedule_insights = build_schedule_insights(ordered_trucks)
         dashboard_metrics = compute_dashboard_metrics(
@@ -1352,7 +1334,6 @@ class MainWindow(QMainWindow):
                 self._schedule_insights.current_week,
                 self._kit_stage_windows_by_truck,
             )
-            self._update_schedule_panel()
             self._update_health_strip(self._dashboard_metrics)
             self._update_attention_panel(self._dashboard_metrics)
             self._update_gantt_panel()
@@ -1509,54 +1490,6 @@ class MainWindow(QMainWindow):
             layout.addWidget(tile["frame"])
 
         return strip
-
-    def _build_schedule_panel(self) -> QWidget:
-        panel = QFrame()
-        self._schedule_panel = panel
-        panel.setFrameShape(QFrame.StyledPanel)
-        panel.setStyleSheet(
-            """
-            QFrame {
-                background-color: #F8FAFC;
-                border: 1px solid #D5DEE7;
-                border-radius: 8px;
-            }
-            """
-        )
-
-        layout = QVBoxLayout(panel)
-        title = QLabel("Master Schedule Reference")
-        self._schedule_title_label = title
-        title.setWordWrap(True)
-        title.setStyleSheet("font-size: 16px; font-weight: 700; color: #0F172A;")
-        layout.addWidget(title)
-
-        self._schedule_start_label = QLabel("")
-        self._schedule_start_label.setWordWrap(True)
-        self._schedule_start_label.setStyleSheet("font-size: 12px; color: #334155;")
-        layout.addWidget(self._schedule_start_label)
-
-        self._current_week_label = QLabel("")
-        self._current_week_label.setWordWrap(True)
-        self._current_week_label.setStyleSheet("font-size: 12px; color: #334155;")
-        layout.addWidget(self._current_week_label)
-
-        self._truck_lag_label = QLabel("")
-        self._truck_lag_label.setWordWrap(True)
-        self._truck_lag_label.setStyleSheet("font-size: 12px; color: #334155;")
-        layout.addWidget(self._truck_lag_label)
-
-        self._hold_summary_label = QLabel("")
-        self._hold_summary_label.setWordWrap(True)
-        self._hold_summary_label.setStyleSheet("font-size: 12px; font-weight: 700; color: #B91C1C;")
-        layout.addWidget(self._hold_summary_label)
-
-        self._standards_label = QLabel("")
-        self._standards_label.setWordWrap(True)
-        self._standards_label.setStyleSheet("font-size: 11px; color: #475569;")
-        layout.addWidget(self._standards_label)
-
-        return panel
 
     def _build_attention_panel(self) -> QWidget:
         panel = QFrame()
@@ -2436,88 +2369,6 @@ class MainWindow(QMainWindow):
         detail_label = tile.get("detail")
         if isinstance(detail_label, QLabel):
             detail_label.setText("")
-
-    def _update_schedule_panel(self) -> None:
-        if not self._schedule_insights:
-            self._schedule_start_label.setText("Schedule Anchor: Truck planned start dates")
-            self._current_week_label.setText("Current Schedule Week: -")
-            self._truck_lag_label.setText("Unplanned trucks are excluded from schedule placement.")
-            self._hold_summary_label.setText("")
-            self._standards_label.setText("")
-            return
-
-        self._schedule_start_label.setText(
-            "Schedule Anchor: Truck planned start dates"
-        )
-        self._current_week_label.setText(
-            f"Current Schedule Week: {_fmt_week(self._schedule_insights.current_week)}"
-        )
-        self._truck_lag_label.setText(
-            "Unplanned trucks are excluded from schedule placement."
-        )
-
-        hold_items = self._schedule_insights.release_hold_items
-        danger_color = "#FF6B6B" if self._minority_report_mode else "#B91C1C"
-        ok_color = "#7CFFB2" if self._minority_report_mode else "#2E7D32"
-        if hold_items:
-            oldest = hold_items[0]
-            self._hold_summary_label.setText(
-                "Engineering release hold: "
-                f"{len(hold_items)} kit(s) blocked; oldest {self._format_late_weeks(oldest.hold_weeks)} "
-                f"({oldest.truck_number} {oldest.kit_name})."
-            )
-            self._hold_summary_label.setStyleSheet(
-                f"font-size: 12px; font-weight: 700; color: {danger_color};"
-            )
-        else:
-            self._hold_summary_label.setText("Engineering release hold: none currently past planned start.")
-            self._hold_summary_label.setStyleSheet(
-                f"font-size: 12px; font-weight: 700; color: {ok_color};"
-            )
-
-        lines = ["Kit Lag / Duration (from truck planned start):"]
-        for standard in self._schedule_insights.standards:
-            lines.append(
-                f"{standard.kit_name}: +{standard.lag_weeks:.1f}w lag, {standard.duration_weeks:.1f}w duration"
-            )
-
-        lines.append("")
-        kit_windows = self._schedule_insights.kit_operation_windows
-        if kit_windows:
-            lines.append("Kit Operation Windows (offsets from kit lag):")
-            lag_by_kit: dict[str, float] = {
-                str(item.kit_name): float(item.lag_weeks)
-                for item in self._schedule_insights.standards
-            }
-            grouped: dict[str, list[str]] = {}
-            for window in kit_windows:
-                lag_weeks = lag_by_kit.get(window.kit_name, 0.0)
-                start_offset = max(0.0, float(window.start_week) - lag_weeks)
-                end_offset = max(start_offset, float(window.end_week) - lag_weeks)
-                stage_text = (
-                    f"{stage_label(window.stage_id).upper()} +{start_offset:.1f}w-+{end_offset:.1f}w"
-                )
-                grouped.setdefault(window.kit_name, []).append(stage_text)
-            for kit_name, stages in grouped.items():
-                lines.append(f"{kit_name}: " + "; ".join(stages))
-        else:
-            lines.append("Kit Operation Windows: none")
-
-        lines.append("")
-        weld_label = stage_label(Stage.WELD).lower()
-        concurrency_items = self._schedule_insights.concurrency_items
-        if concurrency_items:
-            lines.append(f"Live Concurrency ({weld_label} started with upstream still active):")
-            for item in concurrency_items[:5]:
-                lines.append(
-                    f"{item.truck_number}: {item.upstream_open_count} upstream kit(s) still open"
-                )
-            if len(concurrency_items) > 5:
-                lines.append(f"+{len(concurrency_items) - 5} more truck(s)")
-        else:
-            lines.append("Live Concurrency: none")
-
-        self._standards_label.setText("\n".join(lines))
 
     def _update_health_strip(self, metrics: DashboardMetrics) -> None:
         self._apply_signal_tile_state(

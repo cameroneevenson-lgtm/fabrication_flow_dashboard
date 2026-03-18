@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import base64
+import struct
+import zlib
 from datetime import date, datetime, timedelta, timezone
+from functools import lru_cache
 from io import BytesIO
 from typing import Any
 
@@ -15,9 +18,9 @@ from gantt_overlay import (
     render_overlay_png,
 )
 from metrics import DashboardMetrics
-from models import Truck, TruckKit
+from models import Truck
 from schedule import ScheduleInsights
-from stages import Stage, stage_from_id, stage_label
+from stages import Stage
 
 TEAMS_GANTT_MAX_PNG_BYTES = 18_000
 # Teams/sharepoint gantt favors "what still needs attention" over long-range lookahead.
@@ -68,7 +71,100 @@ def _tile_column(label: str, value: str, detail: str, tone: str) -> dict[str, An
         "width": "stretch",
         "items": items,
     }
+
+
+def _png_chunk(tag: bytes, payload: bytes) -> bytes:
+    return (
+        struct.pack(">I", len(payload))
+        + tag
+        + payload
+        + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+    )
+
+
+@lru_cache(maxsize=4)
+def _signal_light_data_url(state: str) -> str:
+    normalized_state = str(state or "").strip().lower()
+    width = 224
+    height = 96
+    off_fill_by_light = {
+        "red": (245, 194, 201),
+        "yellow": (244, 228, 188),
+        "green": (194, 231, 203),
+    }
+    on_fill_by_light = {
+        "red": (255, 110, 128),
+        "yellow": (245, 214, 120),
+        "green": (124, 219, 148),
+    }
+    rows = [bytearray(width * 4) for _ in range(height)]
+    center_y = height / 2.0
+    for light, center_x in (("red", 40), ("yellow", 112), ("green", 184)):
+        is_active = light == normalized_state
+        fill_rgb = on_fill_by_light[light] if is_active else off_fill_by_light[light]
+        fill_alpha = 255 if light == normalized_state else 64
+        fill_radius = 30.0 if is_active else 26.0
+        outline_radius = (fill_radius + 2.5) if is_active else 0.0
+        fill_radius_sq = fill_radius * fill_radius
+        outline_radius_sq = outline_radius * outline_radius
+        max_radius = max(fill_radius, outline_radius)
+        min_x = max(0, int(center_x - max_radius - 1))
+        max_x = min(width - 1, int(center_x + max_radius + 1))
+        min_y = max(0, int(center_y - max_radius - 1))
+        max_y = min(height - 1, int(center_y + max_radius + 1))
+        for y in range(min_y, max_y + 1):
+            for x in range(min_x, max_x + 1):
+                dx = (x + 0.5) - center_x
+                dy = (y + 0.5) - float(center_y)
+                distance_sq = (dx * dx) + (dy * dy)
+                if distance_sq <= fill_radius_sq:
+                    rgba = (*fill_rgb, fill_alpha)
+                elif is_active and distance_sq <= outline_radius_sq:
+                    rgba = (0, 0, 0, 255)
+                else:
+                    continue
+                offset = x * 4
+                rows[y][offset : offset + 4] = bytes(rgba)
+
+    raw = bytearray()
+    for row in rows:
+        raw.append(0)
+        raw.extend(row)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"IDAT", zlib.compress(bytes(raw), level=9))
+        + _png_chunk(b"IEND", b"")
+    )
+    encoded = base64.b64encode(png).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
 def _signal_light_column(label: str, state: str) -> dict[str, Any]:
+    return {
+        "type": "Column",
+        "width": "stretch",
+        "items": [
+            {
+                "type": "TextBlock",
+                "text": label,
+                "size": "Medium",
+                "weight": "Bolder",
+                "wrap": True,
+                "horizontalAlignment": "Center",
+            },
+            {
+                "type": "Image",
+                "url": _signal_light_data_url(state),
+                "altText": f"{label} signal is {state}",
+                "horizontalAlignment": "Center",
+                "width": "144px",
+                "spacing": "Small",
+            },
+        ],
+    }
     color_by_light = {
         "red": "Attention",
         "yellow": "Warning",
@@ -83,7 +179,7 @@ def _signal_light_column(label: str, state: str) -> dict[str, Any]:
                 "color": color_by_light[light],
                 "isSubtle": light != state,
                 "weight": "Bolder" if light == state else "Default",
-                "size": "Large",
+                "size": "ExtraLarge",
             }
         )
         if index < 2:
@@ -96,8 +192,8 @@ def _signal_light_column(label: str, state: str) -> dict[str, Any]:
             {
                 "type": "TextBlock",
                 "text": label,
-                "size": "Small",
-                "isSubtle": True,
+                "size": "Medium",
+                "weight": "Bolder",
                 "wrap": True,
                 "horizontalAlignment": "Center",
             },
@@ -110,20 +206,129 @@ def _signal_light_column(label: str, state: str) -> dict[str, Any]:
     }
 
 
-def _find_main_body_kit(truck: Truck) -> TruckKit | None:
-    for kit in truck.kits:
-        if not kit.is_active:
+def _overlay_status_to_adaptive_color(status_key: str) -> str:
+    normalized = str(status_key or "").strip().lower()
+    if normalized == "red":
+        return "Attention"
+    if normalized == "yellow":
+        return "Warning"
+    if normalized == "green":
+        return "Good"
+    if normalized == "blue":
+        return "Accent"
+    return "Default"
+
+
+def _signal_driver_identity(label: str) -> tuple[str, str] | None:
+    base = str(label or "").strip()
+    if not base:
+        return None
+    note_start = base.find(" (")
+    if note_start >= 0:
+        base = base[:note_start].strip()
+    parts = base.split(maxsplit=1)
+    if len(parts) != 2:
+        return None
+    truck_number, kit_name = parts
+    return (truck_number.strip().lower(), kit_name.strip().lower())
+
+
+def _build_signal_driver_status_map(
+    trucks: list[Truck],
+    schedule_insights: ScheduleInsights,
+) -> dict[tuple[str, str], str]:
+    max_rows = max(
+        1,
+        sum(1 for truck in trucks for kit in truck.kits if getattr(kit, "is_active", False)),
+    )
+    rows = build_overlay_rows(
+        trucks=trucks,
+        schedule_insights=schedule_insights,
+        max_rows=max_rows,
+    )
+    status_by_driver: dict[tuple[str, str], str] = {}
+    for row in rows:
+        truck_label, separator, kit_label = row.row_label.partition("|")
+        if not separator:
             continue
-        if kit.is_main_kit or str(kit.kit_name).strip().lower() == "body":
-            return kit
-    return None
-def _kit_stage_text(kit: TruckKit) -> str:
-    front_stage = stage_from_id(kit.front_stage_id)
-    if front_stage == Stage.RELEASE:
-        return "released" if kit.release_state == "released" else "unreleased"
-    if front_stage == Stage.COMPLETE:
-        return "complete"
-    return stage_label(front_stage)
+        key = (truck_label.strip().lower(), kit_label.strip().lower())
+        status_by_driver[key] = row.status_key
+    return status_by_driver
+
+
+def _normalize_signal_feed_driver(signal_label: str, driver: str) -> str | None:
+    text = str(driver or "").strip()
+    if not text:
+        return None
+    note_start = text.find(" (")
+    if note_start < 0:
+        return text
+
+    base = text[:note_start].strip()
+    note = text[note_start + 2 :]
+    if note.endswith(")"):
+        note = note[:-1]
+    normalized_note = note.strip().lower()
+    normalized_signal = str(signal_label or "").strip().upper()
+
+    if normalized_signal.startswith("WELD") and normalized_note.startswith("weld ") and normalized_note.endswith("%"):
+        return base
+    if normalized_signal == "WELD A" and normalized_note == "next blocked":
+        return None
+    return text
+
+
+def _build_signal_feed_items(
+    dashboard_metrics: DashboardMetrics,
+    *,
+    trucks: list[Truck],
+    schedule_insights: ScheduleInsights,
+) -> list[dict[str, Any]]:
+    signal_feeds = [
+        ("LASER", dashboard_metrics.laser_buffer.drivers),
+        ("BRAKE", dashboard_metrics.bend_buffer.drivers),
+        ("WELD A", dashboard_metrics.weld_feed_a.drivers),
+        ("WELD B", dashboard_metrics.weld_feed_b.drivers),
+    ]
+    status_by_driver = _build_signal_driver_status_map(trucks, schedule_insights)
+    items: list[dict[str, Any]] = []
+    for label, drivers in signal_feeds:
+        visible = [
+            normalized
+            for driver in drivers
+            for normalized in [_normalize_signal_feed_driver(label, str(driver))]
+            if normalized
+        ]
+        inlines: list[dict[str, Any]] = [
+            {
+                "type": "TextRun",
+                "text": f"{label}: ",
+                "weight": "Bolder",
+            }
+        ]
+        if visible:
+            for index, driver in enumerate(visible):
+                if index > 0:
+                    inlines.append({"type": "TextRun", "text": ", "})
+                driver_key = _signal_driver_identity(driver)
+                driver_status = status_by_driver.get(driver_key or ("", ""), "")
+                inlines.append(
+                    {
+                        "type": "TextRun",
+                        "text": driver,
+                        "color": _overlay_status_to_adaptive_color(driver_status),
+                    }
+                )
+        else:
+            inlines.append({"type": "TextRun", "text": "None", "isSubtle": True})
+        items.append(
+            {
+                "type": "RichTextBlock",
+                "inlines": inlines,
+                "spacing": "Small",
+            }
+        )
+    return items
 
 
 def _current_week_of_label() -> str:
@@ -337,12 +542,12 @@ def render_published_gantt_png_bytes(
         min_week=min_week,
         max_week=max_week,
         week_label=_week_value_to_date_label,
-        fig_width=24.0,
+        fig_width=12.0,
         dpi=320,
-        bar_height=0.48,
-        fig_min_height=2.0,
-        fig_height_per_row=0.22,
-        y_label_size=8.5,
+        bar_height=0.56,
+        fig_min_height=2.4,
+        fig_height_per_row=0.34,
+        y_label_size=9.5,
         x_label_size=8.5,
         x_label_text="Week of",
         legend_size=9.5,
@@ -358,6 +563,20 @@ def _build_scheduled_vs_actual_gantt_items(
     allow_image: bool = True,
     gantt_link_url: str = "",
 ) -> list[dict[str, Any]]:
+    title_item: dict[str, Any] = {
+        "type": "TextBlock",
+        "text": "Master Schedule vs Actual - Click to open",
+        "weight": "Bolder",
+        "spacing": "Medium",
+        "wrap": True,
+        "horizontalAlignment": "Center",
+    }
+    if gantt_link_url:
+        title_item["selectAction"] = {
+            "type": "Action.OpenUrl",
+            "url": gantt_link_url,
+        }
+
     render_context = _build_card_gantt_render_context(
         trucks=trucks,
         schedule_insights=schedule_insights,
@@ -402,33 +621,14 @@ def _build_scheduled_vs_actual_gantt_items(
                 "url": gantt_link_url,
             }
         return [
-            {
-                "type": "TextBlock",
-                "text": "Master Schedule vs Actual",
-                "weight": "Bolder",
-                "spacing": "Medium",
-                "wrap": True,
-            },
-            {
-                "type": "TextBlock",
-                "text": "Click to open full-size schedule",
-                "weight": "Bolder",
-                "spacing": "Small",
-                "wrap": True,
-            },
+            title_item,
             image_item,
         ]
 
     now_idx = _week_to_index(current_week, min_week, max_week, chart_width)
 
     items: list[dict[str, Any]] = [
-        {
-            "type": "TextBlock",
-            "text": "Master Schedule vs Actual",
-            "weight": "Bolder",
-            "spacing": "Medium",
-            "wrap": True,
-        },
+        title_item,
         {
             "type": "TextBlock",
             "text": "Legend: L laser, B bend, W weld, o back, O front, > drift, | current week",
@@ -546,6 +746,17 @@ def build_dashboard_adaptive_card(
             "spacing": "Small",
         }
     )
+    body.append(
+        {
+            "type": "Container",
+            "id": "signal_feed_section",
+            "items": _build_signal_feed_items(
+                dashboard_metrics,
+                trucks=trucks,
+                schedule_insights=schedule_insights,
+            ),
+        }
+    )
 
     attention_items_block: list[dict[str, Any]] = [
         {
@@ -563,7 +774,8 @@ def build_dashboard_adaptive_card(
         min_priority=90,
         include_late_fabrication=False,
     )
-    for item in attention_lines:
+    visible_attention_lines = attention_lines[: max(1, int(max_attention))]
+    for item in visible_attention_lines:
         attention_items_block.append(
             {
                 "type": "TextBlock",
@@ -573,7 +785,7 @@ def build_dashboard_adaptive_card(
                 "spacing": "Small",
             }
         )
-    if not attention_lines:
+    if not visible_attention_lines:
         attention_items_block.append(
             {
                 "type": "TextBlock",
@@ -583,15 +795,6 @@ def build_dashboard_adaptive_card(
                 "spacing": "Small",
             }
         )
-    body.append(
-        {
-            "type": "Container",
-            "id": "attention_section",
-            "isVisible": True,
-            "items": attention_items_block,
-        }
-    )
-
     body.extend(
         _build_scheduled_vs_actual_gantt_items(
             trucks=trucks,
@@ -600,81 +803,14 @@ def build_dashboard_adaptive_card(
             gantt_link_url=gantt_link_url,
         )
     )
-
-    board_lane_items: list[dict[str, Any]] = [
-        {
-            "type": "TextBlock",
-            "text": "Board Lanes",
-            "weight": "Bolder",
-            "spacing": "Medium",
-            "wrap": True,
-        }
-    ]
-
-    visible_trucks = trucks[: max(1, int(max_trucks))]
-    board_lane_columns = 2
-    for start in range(0, len(visible_trucks), board_lane_columns):
-        chunk = visible_trucks[start : start + board_lane_columns]
-        columns: list[dict[str, Any]] = []
-        for truck in chunk:
-            main_kit = _find_main_body_kit(truck)
-            main_text = _kit_stage_text(main_kit) if main_kit else "N/A"
-            columns.append(
-                {
-                    "type": "Column",
-                    "width": "stretch",
-                    "items": [
-                        {
-                            "type": "TextBlock",
-                            "text": f"{truck.truck_number} | Body: {main_text}",
-                            "weight": "Bolder",
-                            "wrap": True,
-                        },
-                        {
-                            "type": "FactSet",
-                            "facts": [
-                                {
-                                    "title": str(kit.kit_name),
-                                    "value": _kit_stage_text(kit),
-                                }
-                                for kit in truck.kits
-                                if kit.is_active
-                            ],
-                            "spacing": "Small",
-                        },
-                    ],
-                }
-            )
-        while len(columns) < board_lane_columns:
-            columns.append({"type": "Column", "width": "stretch", "items": []})
-        board_lane_items.append(
-            {
-                "type": "ColumnSet",
-                "columns": columns,
-                "spacing": "Small",
-                "separator": True,
-            }
-        )
-
     body.append(
         {
             "type": "Container",
-            "id": "truck_lanes_section",
+            "id": "attention_section",
             "isVisible": True,
-            "items": board_lane_items,
+            "items": attention_items_block,
         }
     )
-
-    remaining = len(trucks) - len(visible_trucks)
-    if remaining > 0:
-        body.append(
-            {
-                "type": "TextBlock",
-                "text": f"+{remaining} more truck(s) not shown.",
-                "isSubtle": True,
-                "wrap": True,
-            }
-        )
 
     return {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
