@@ -13,142 +13,316 @@
         },
         "body": [
           {
-            "type": "TextBlock",
-            "text": "Fabrication Status",
-            "size": "Large",
-            "weight": "Bolder",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "Published: 2026-03-12 17:40 Eastern Summer Time",
-            "isSubtle": true,
-            "spacing": "None",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "Confirmed published snapshot",
-            "isSubtle": true,
-            "spacing": "None",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "Top Summary",
-            "weight": "Bolder",
-            "spacing": "Medium",
-            "wrap": true
-          },
-          {
-            "type": "FactSet",
-            "facts": [
+            "type": "ColumnSet",
+            "columns": [
               {
-                "title": "Active Trucks",
-                "value": "4"
+                "type": "Column",
+                "width": "stretch",
+                "items": [
+                  {
+                    "type": "TextBlock",
+                    "text": "LASER",
+                    "size": "Small",
+                    "isSubtle": true,
+                    "wrap": true,
+                    "horizontalAlignment": "Center"
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "\ud83d\udfe1",
+                    "size": "ExtraLarge",
+                    "wrap": true,
+                    "horizontalAlignment": "Center"
+                  }
+                ]
               },
               {
-                "title": "Next Main Kit Released",
-                "value": "No"
+                "type": "Column",
+                "width": "stretch",
+                "items": [
+                  {
+                    "type": "TextBlock",
+                    "text": "BRAKE",
+                    "size": "Small",
+                    "isSubtle": true,
+                    "wrap": true,
+                    "horizontalAlignment": "Center"
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "\ud83d\udfe1",
+                    "size": "ExtraLarge",
+                    "wrap": true,
+                    "horizontalAlignment": "Center"
+                  }
+                ]
               },
               {
-                "title": "Bend Buffer",
-                "value": "Low"
+                "type": "Column",
+                "width": "stretch",
+                "items": [
+                  {
+                    "type": "TextBlock",
+                    "text": "WELD A",
+                    "size": "Small",
+                    "isSubtle": true,
+                    "wrap": true,
+                    "horizontalAlignment": "Center"
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "\ud83d\udfe1",
+                    "size": "ExtraLarge",
+                    "wrap": true,
+                    "horizontalAlignment": "Center"
+                  }
+                ]
               },
               {
-                "title": "Weld Feed",
-                "value": "Healthy"
-              },
-              {
-                "title": "Kits Behind Schedule",
-                "value": "7"
-              },
-              {
-                "title": "Blocked Kits",
-                "value": "1"
+                "type": "Column",
+                "width": "stretch",
+                "items": [
+                  {
+                    "type": "TextBlock",
+                    "text": "WELD B",
+                    "size": "Small",
+                    "isSubtle": true,
+                    "wrap": true,
+                    "horizontalAlignment": "Center"
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "\ud83d\udfe1",
+                    "size": "ExtraLarge",
+                    "wrap": true,
+                    "horizontalAlignment": "Center"
+                  }
+                ]
               }
             ],
             "spacing": "Small"
           },
           {
+            "type": "Container",
+            "id": "attention_section",
+            "isVisible": true,
+            "items": [
+              {
+                "type": "TextBlock",
+                "text": "Attention",
+                "weight": "Bolder",
+                "spacing": "Medium",
+                "wrap": true
+              },
+              {
+                "type": "TextBlock",
+                "text": "- Engineering release is holding work start: 2 kit(s) past planned start; oldest 3 weeks late (F55334 Console).",
+                "color": "Attention",
+                "wrap": true,
+                "spacing": "Small"
+              },
+              {
+                "type": "TextBlock",
+                "text": "- Bend buffer low: Less than 3 released kit(s) are in laser/bend.",
+                "color": "Warning",
+                "wrap": true,
+                "spacing": "Small"
+              }
+            ]
+          },
+          {
             "type": "TextBlock",
-            "text": "Risk Summary",
+            "text": "Master Schedule vs Actual",
             "weight": "Bolder",
             "spacing": "Medium",
             "wrap": true
           },
           {
             "type": "TextBlock",
-            "text": "- Next Body not released: F56139 Body is not released.",
-            "color": "Attention",
-            "spacing": "Small",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "- Engineering release is holding work start: 3 kit(s) past planned start; oldest 2.0 week(s) (F55334 Console).",
-            "color": "Attention",
-            "spacing": "Small",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "- Bend buffer low: Less than 3 released kit(s) are in laser/bend.",
-            "color": "Warning",
-            "spacing": "Small",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "Per-Truck Summary",
+            "text": "Click gantt to open readable full-size version",
             "weight": "Bolder",
-            "spacing": "Medium",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "- F55334 - Weld - Behind - 2 kit(s) late release.",
-            "color": "Attention",
             "spacing": "Small",
             "wrap": true
           },
           {
-            "type": "TextBlock",
-            "text": "- F55985 - Weld - Behind - 1 blocked kit(s).",
-            "color": "Attention",
+            "type": "Image",
+            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAABAoAAACjCAMAAAA0JgwrAAAB/lBMVEX+/v67mvTk6vCRsPP6uIrZ4eqEpu1qanJ1eYXFyMzU1dlSWGWlqK+FiZOytbvurYJGS1r0nQvbJibVnImPk5xKUF4QFyhaaYUwN0eXm6O7vcJlZYXAo/RcYm49RFNscX19gYzZ3eL5zojdNTX61Zaeoai+wMUWokocIzUjKjzSVkyMm9AoL0DRaGrNVHnUo3bWZlf0o3zam2xGp42sj+zAjNrPpYaKrdt1YFjuyMr1oRPLY5GtltavZID4xGzPe39sTFh8lMn98NnnlZbpd3f3t0vYgoTlYmK0VmpVqaLEnNbztbXpm3aGqGfqa1Xxqqpsn6LEXo3LQ1LXNkO0hNTh0NU2h2aqgEqpQU/onT6ejMmeR1fl4tdyp2L2sTtwXFb72aFdn5NVdr+3hT8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/Ct+ZAAAAgHRSTlP+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACZrBS0AABkQSURBVHja7V0Je9tGku10TKEvIHAMaABkcEUhR7JjO6dzTmaSTDY797n3vfv//8NWN0BKsigJZJeoJlUvn2lJpioFEHiornpdxRiBQCAQCAQCgUAgEAgEAoFAIBAIBAKBQDgszPxAJ5BAOAjwvvcggr7ndAoJhIMICnqvX+8pLCAQDmR9cJ+/TiAQiAo2xdF0fPvtt1d+9sYG+PrJR0++fiMI8LvEu/8+/H1ywgkPHT0sEB5dxepW1/Y1OYaUgEzTdMGKPM/l7DRv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",
+            "size": "Stretch",
+            "altText": "Master schedule vs actual gantt",
             "spacing": "Small",
-            "wrap": true
+            "selectAction": {
+              "type": "Action.OpenUrl",
+              "url": "https://battleshield.sharepoint.com/:i:/s/Manufacturing/IQAfDZ1FNL9XRJsZlW0ChNbmASchzlcjFwEi_Il1vDF8Xjw?e=u0g8py&download=1"
+            }
           },
           {
-            "type": "TextBlock",
-            "text": "- F56139 - Release - Behind - 1 kit(s) late release.",
-            "color": "Attention",
-            "spacing": "Small",
-            "wrap": true
-          },
-          {
-            "type": "TextBlock",
-            "text": "- F56724 - Release - In Sync - None.",
-            "color": "Good",
-            "spacing": "Small",
-            "wrap": true
-          }
-        ],
-        "actions": [
-          {
-            "type": "Action.OpenUrl",
-            "title": "Open Full Dashboard",
-            "url": "file:///C:/Tools/fabrication_flow_dashboard/_runtime/published/summary.html"
-          },
-          {
-            "type": "Action.OpenUrl",
-            "title": "Open Gantt Snapshot",
-            "url": "file:///C:/Tools/fabrication_flow_dashboard/_runtime/published/gantt.png"
-          },
-          {
-            "type": "Action.OpenUrl",
-            "title": "Open Published JSON",
-            "url": "file:///C:/Tools/fabrication_flow_dashboard/_runtime/published/status.json"
+            "type": "Container",
+            "id": "truck_lanes_section",
+            "isVisible": true,
+            "items": [
+              {
+                "type": "TextBlock",
+                "text": "Board Lanes",
+                "weight": "Bolder",
+                "spacing": "Medium",
+                "wrap": true
+              },
+              {
+                "type": "ColumnSet",
+                "columns": [
+                  {
+                    "type": "Column",
+                    "width": "stretch",
+                    "items": [
+                      {
+                        "type": "TextBlock",
+                        "text": "F55985 | Body: complete",
+                        "weight": "Bolder",
+                        "wrap": true
+                      },
+                      {
+                        "type": "FactSet",
+                        "facts": [
+                          {
+                            "title": "Body",
+                            "value": "complete"
+                          },
+                          {
+                            "title": "Pumphouse",
+                            "value": "complete"
+                          },
+                          {
+                            "title": "Console",
+                            "value": "complete"
+                          },
+                          {
+                            "title": "Interior",
+                            "value": "complete"
+                          },
+                          {
+                            "title": "Exterior",
+                            "value": "Weld"
+                          }
+                        ],
+                        "spacing": "Small"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Column",
+                    "width": "stretch",
+                    "items": [
+                      {
+                        "type": "TextBlock",
+                        "text": "F55334 | Body: Weld",
+                        "weight": "Bolder",
+                        "wrap": true
+                      },
+                      {
+                        "type": "FactSet",
+                        "facts": [
+                          {
+                            "title": "Body",
+                            "value": "Weld"
+                          },
+                          {
+                            "title": "Pumphouse",
+                            "value": "complete"
+                          },
+                          {
+                            "title": "Console",
+                            "value": "unreleased"
+                          },
+                          {
+                            "title": "Interior",
+                            "value": "Bend"
+                          },
+                          {
+                            "title": "Exterior",
+                            "value": "Laser"
+                          }
+                        ],
+                        "spacing": "Small"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Column",
+                    "width": "stretch",
+                    "items": [
+                      {
+                        "type": "TextBlock",
+                        "text": "F56139 | Body: unreleased",
+                        "weight": "Bolder",
+                        "wrap": true
+                      },
+                      {
+                        "type": "FactSet",
+                        "facts": [
+                          {
+                            "title": "Body",
+                            "value": "unreleased"
+                          },
+                          {
+                            "title": "Console",
+                            "value": "unreleased"
+                          },
+                          {
+                            "title": "Interior",
+                            "value": "unreleased"
+                          },
+                          {
+                            "title": "Exterior",
+                            "value": "unreleased"
+                          }
+                        ],
+                        "spacing": "Small"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Column",
+                    "width": "stretch",
+                    "items": [
+                      {
+                        "type": "TextBlock",
+                        "text": "F56724 | Body: unreleased",
+                        "weight": "Bolder",
+                        "wrap": true
+                      },
+                      {
+                        "type": "FactSet",
+                        "facts": [
+                          {
+                            "title": "Body",
+                            "value": "unreleased"
+                          },
+                          {
+                            "title": "Pumphouse",
+                            "value": "unreleased"
+                          },
+                          {
+                            "title": "Console",
+                            "value": "unreleased"
+                          },
+                          {
+                            "title": "Interior",
+                            "value": "unreleased"
+                          },
+                          {
+                            "title": "Exterior",
+                            "value": "unreleased"
+                          }
+                        ],
+                        "spacing": "Small"
+                      }
+                    ]
+                  }
+                ],
+                "spacing": "Small",
+                "separator": true
+              }
+            ]
           }
         ]
       }

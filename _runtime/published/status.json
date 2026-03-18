@@ -1,29 +1,20 @@
 {
-  "published_at_utc": "2026-03-12T21:40:55+00:00",
+  "published_at_utc": "2026-03-18T20:03:00+00:00",
   "summary": {
     "active_trucks": 4,
-    "next_main_kit_released": false,
-    "bend_buffer": "low",
-    "weld_feed": "healthy",
-    "kits_behind_schedule": 7,
-    "late_releases": 3,
+    "laser": "low",
+    "bend_buffer": "healthy",
+    "weld_feed_a": "watch",
+    "weld_feed_b": "healthy",
+    "kits_behind_schedule": 4,
+    "late_releases": 2,
     "blocked_kits": 1
   },
   "risk_summary": [
     {
-      "priority": 100,
-      "title": "Next Body not released",
-      "detail": "F56139 Body is not released."
-    },
-    {
       "priority": 96,
       "title": "Engineering release is holding work start",
-      "detail": "3 kit(s) past planned start; oldest 2.0 week(s) (F55334 Console)."
-    },
-    {
-      "priority": 80,
-      "title": "Bend buffer low",
-      "detail": "Less than 3 released kit(s) are in laser/bend."
+      "detail": "2 kit(s) past planned start; oldest 3 weeks late (F55334 Console)."
     }
   ],
   "truck_rows": [
@@ -32,13 +23,13 @@
       "main_stage": "Weld",
       "sync_state": "Behind",
       "risk_category": "Late Release",
-      "issue_summary": "2 kit(s) late release.",
+      "issue_summary": "1 kit(s) late release.",
       "tone": "problem"
     },
     {
       "truck_number": "F55985",
-      "main_stage": "Weld",
-      "sync_state": "Behind",
+      "main_stage": "Complete",
+      "sync_state": "In Sync",
       "risk_category": "Blocked",
       "issue_summary": "1 blocked kit(s).",
       "tone": "problem"
@@ -62,7 +53,7 @@
   ],
   "artifact_links": {
     "summary_html_url": "file:///C:/Tools/fabrication_flow_dashboard/_runtime/published/summary.html",
-    "gantt_png_url": "file:///C:/Tools/fabrication_flow_dashboard/_runtime/published/gantt.png",
+    "gantt_png_url": "https://battleshield.sharepoint.com/:i:/s/Manufacturing/IQAfDZ1FNL9XRJsZlW0ChNbmASchzlcjFwEi_Il1vDF8Xjw?e=u0g8py&download=1",
     "status_json_url": "file:///C:/Tools/fabrication_flow_dashboard/_runtime/published/status.json"
   }
 }

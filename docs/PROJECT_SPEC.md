@@ -30,7 +30,7 @@ Out of scope:
 - `database.py`: SQLite schema lifecycle and CRUD operations.
 - `schedule.py`: schedule insights generation from config + live truck state.
 - `metrics.py`: health/risk metrics and attention signal computation.
-- `teams_card.py`: Teams Adaptive Card payload builders (compact dashboard + gantt-only).
+- `teams_card.py`: Teams Adaptive Card payload builders and shared gantt rendering helpers.
 - `publish_artifacts.py`: published artifact generation (`summary.html`, `gantt.png`, `status.json`) and link resolution.
 - `truck_registry.py`: CSV parsing and sync orchestration.
 
@@ -174,18 +174,13 @@ Dashboard publish follows this sequence:
 4. POST payload to the Teams Incoming Webhook.
 
 ## 7.4 Degradation Strategy
-For gantt-only publish:
-- Try higher row counts first with image.
-- Then reduce row count and/or disable image until size fits.
-- Keep smallest viable fallback payload if no candidate fits.
-
 For compact dashboard publish:
 - Reduce per-truck row count progressively until payload fits.
+- Gantt artifact generation attempts a compact PNG render and skips `gantt.png` if image generation cannot fit constraints.
 
 ## 7.5 Output Artifacts
 Generated payloads are written to:
 - `_runtime/teams_dashboard_card.json`
-- `_runtime/teams_gantt_only_card.json`
 - `_runtime/published/summary.html`
 - `_runtime/published/gantt.png` (if image extraction succeeds)
 - `_runtime/published/status.json`

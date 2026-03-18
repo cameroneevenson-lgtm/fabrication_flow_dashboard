@@ -53,12 +53,13 @@ from gantt_overlay import (
 )
 from metrics import (
     DashboardMetrics,
+    SnapshotMetrics,
     compute_snapshot_metrics,
     compute_dashboard_metrics,
     sort_trucks_natural,
 )
 from models import RELEASE_STATES, Truck, TruckKit, first_pdf_link
-from publish_artifacts import publish_compact_artifacts
+from publish_artifacts import ArtifactPublishResult, publish_compact_artifacts
 from schedule import ScheduleInsights, build_schedule_insights
 from stages import (
     FABRICATION_STAGE_POSITION_SCALE,
@@ -69,7 +70,7 @@ from stages import (
     stage_label,
     stage_options,
 )
-from teams_card import build_teams_gantt_only_webhook_payload, build_teams_webhook_payload
+from teams_card import build_teams_webhook_payload
 
 DEFAULT_TEAMS_WEBHOOK_URL = (
     "https://default97009fec357647f39ce0fc3d1496b7.b8.environment.api.powerplatform.com:443/"
@@ -77,14 +78,6 @@ DEFAULT_TEAMS_WEBHOOK_URL = (
     "paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=ggEqWDyQT6T3GEouJCsp0jiZPF8mgQI5j5bl4T8T4CQ"
 )
 TEAMS_ADAPTIVE_CARD_MAX_PAYLOAD_BYTES = 28_000
-HI_RES_GANTT_EXPORT_DIR = Path(
-    r"C:\Users\athankachan\BATTLESHIELD INDUSTRIES LIMITED\Manufacturing - Fire Truck Fabrication"
-)
-HI_RES_GANTT_FILENAME = "fabrication_gantt_hi_res.png"
-TEMP_SHAREPOINT_GANTT_URL = (
-    "https://battleshield.sharepoint.com/:i:/s/Manufacturing/"
-    "IQAfDZ1FNL9XRJsZlW0ChNbmASchzlcjFwEi_Il1vDF8Xjw?e=u0g8py"
-)
 SIGNAL_TILE_HEIGHT = 136
 SIGNAL_TILE_DETAIL_HEIGHT = 30
 
@@ -158,6 +151,9 @@ class KitEditDialog(QDialog):
         self._back_position = int(getattr(kit, "back_position", 10) or 10)
         self._front_stage_combo.currentIndexChanged.connect(self._on_stage_selection_changed)
         self._back_stage_combo.currentIndexChanged.connect(self._on_stage_selection_changed)
+        self._keep_tail_synced_checkbox = QCheckBox("Keep tail at head")
+        self._keep_tail_synced_checkbox.setChecked(bool(getattr(kit, "keep_tail_at_head", True)))
+        self._keep_tail_synced_checkbox.toggled.connect(self._on_keep_tail_synced_toggled)
 
         self._blocker_input = QLineEdit(kit.blocker)
         self._pdf_links_input = QLineEdit(first_pdf_link(kit.pdf_links))
@@ -237,6 +233,15 @@ class KitEditDialog(QDialog):
         )
         layout.addLayout(front_row)
         layout.addLayout(tail_row)
+        sync_row = QHBoxLayout()
+        sync_row.setContentsMargins(0, 0, 0, 0)
+        sync_row.setSpacing(6)
+        sync_row.addWidget(self._keep_tail_synced_checkbox)
+        sync_now_button = QPushButton("Pull Tail to Head")
+        sync_now_button.clicked.connect(self._sync_tail_to_head)
+        sync_row.addWidget(sync_now_button)
+        sync_row.addStretch(1)
+        layout.addLayout(sync_row)
         return container
 
     def _create_position_stepper_row(self, *, label: str, on_back, on_forward) -> tuple[QHBoxLayout, QLabel, QPushButton, QPushButton]:
@@ -270,6 +275,9 @@ class KitEditDialog(QDialog):
         return (row, value_label, back_button, forward_button)
 
     def _on_stage_selection_changed(self) -> None:
+        if self._keep_tail_synced_checkbox.isChecked():
+            self._sync_tail_stage_to_head()
+
         front_stage_id, back_stage_id = normalize_stage_span(
             front_stage_id=int(self._front_stage_combo.currentData()),
             back_stage_id=int(self._back_stage_combo.currentData()),
@@ -290,6 +298,8 @@ class KitEditDialog(QDialog):
             front_stage_id=front_stage_id,
             back_stage_id=back_stage_id,
         )
+        if self._keep_tail_synced_checkbox.isChecked():
+            self._back_position = int(self._front_position)
         self._refresh_position_controls()
 
     @staticmethod
@@ -326,17 +336,19 @@ class KitEditDialog(QDialog):
 
         back_stage = stage_from_id(self._back_stage_combo.currentData())
         back_positions = FABRICATION_STAGE_POSITION_SCALE.get(back_stage)
+        tail_controls_enabled = not self._keep_tail_synced_checkbox.isChecked()
         if back_positions:
             back_index = self._position_index(back_positions, self._back_position)
             self._back_position_value_label.setText(
                 self._format_position_percent(back_positions, self._back_position)
             )
-            self._back_position_back_button.setEnabled(back_index > 0)
-            self._back_position_forward_button.setEnabled(back_index < len(back_positions) - 1)
+            self._back_position_back_button.setEnabled(tail_controls_enabled and back_index > 0)
+            self._back_position_forward_button.setEnabled(tail_controls_enabled and back_index < len(back_positions) - 1)
         else:
             self._back_position_value_label.setText("--")
             self._back_position_back_button.setEnabled(False)
             self._back_position_forward_button.setEnabled(False)
+        self._back_stage_combo.setEnabled(tail_controls_enabled)
 
     def _adjust_front_position(self, delta: int) -> None:
         front_stage = stage_from_id(self._front_stage_combo.currentData())
@@ -347,9 +359,13 @@ class KitEditDialog(QDialog):
         current_index = self._position_index(positions, self._front_position)
         target_index = max(0, min(len(positions) - 1, current_index + int(delta)))
         self._front_position = int(positions[target_index])
+        if self._keep_tail_synced_checkbox.isChecked():
+            self._back_position = int(self._front_position)
         self._on_stage_selection_changed()
 
     def _adjust_back_position(self, delta: int) -> None:
+        if self._keep_tail_synced_checkbox.isChecked():
+            return
         back_stage = stage_from_id(self._back_stage_combo.currentData())
         positions = FABRICATION_STAGE_POSITION_SCALE.get(back_stage)
         if not positions:
@@ -359,6 +375,24 @@ class KitEditDialog(QDialog):
         target_index = max(0, min(len(positions) - 1, current_index + int(delta)))
         self._back_position = int(positions[target_index])
         self._on_stage_selection_changed()
+
+    def _sync_tail_stage_to_head(self) -> None:
+        front_stage_id = int(self._front_stage_combo.currentData())
+        if int(self._back_stage_combo.currentData()) != front_stage_id:
+            self._back_stage_combo.blockSignals(True)
+            self._set_stage_combo_value(self._back_stage_combo, front_stage_id)
+            self._back_stage_combo.blockSignals(False)
+
+    def _sync_tail_to_head(self) -> None:
+        self._sync_tail_stage_to_head()
+        self._back_position = int(self._front_position)
+        self._on_stage_selection_changed()
+
+    def _on_keep_tail_synced_toggled(self, checked: bool) -> None:
+        if checked:
+            self._sync_tail_to_head()
+            return
+        self._refresh_position_controls()
 
     def _mark_removed(self) -> None:
         self._active_checkbox.setChecked(False)
@@ -534,6 +568,7 @@ class KitEditDialog(QDialog):
             "back_stage_id": int(self._back_stage_combo.currentData()),
             "front_position": int(self._front_position),
             "back_position": int(self._back_position),
+            "keep_tail_at_head": self._keep_tail_synced_checkbox.isChecked(),
             "blocker": self._blocker_input.text(),
             "pdf_links": self._normalized_pdf_link(),
             "is_active": self._active_checkbox.isChecked(),
@@ -939,18 +974,12 @@ class MainWindow(QMainWindow):
         plan_trucks_button = QPushButton("Manage Truck Plan")
         plan_trucks_button.clicked.connect(self._on_manage_truck_plan)
         controls.addWidget(plan_trucks_button)
+        update_gantt_button = QPushButton("Update Published Gantt")
+        update_gantt_button.clicked.connect(self._publish_gantt_artifacts_only)
+        controls.addWidget(update_gantt_button)
         publish_button = QPushButton("Publish to Teams")
         publish_button.clicked.connect(self._publish_dashboard_snapshot_to_teams)
         controls.addWidget(publish_button)
-        publish_gantt_button = QPushButton("Publish Gantt to Teams")
-        publish_gantt_button.clicked.connect(self._publish_gantt_only_to_teams)
-        controls.addWidget(publish_gantt_button)
-        save_hi_res_gantt_button = QPushButton("Save Hi-Res Gantt")
-        save_hi_res_gantt_button.clicked.connect(self._save_hi_res_gantt_to_sync_folder)
-        controls.addWidget(save_hi_res_gantt_button)
-        test_sharepoint_link_button = QPushButton("Test SP Link")
-        test_sharepoint_link_button.clicked.connect(self._publish_sharepoint_link_test_card)
-        controls.addWidget(test_sharepoint_link_button)
         self._minority_report_checkbox = QCheckBox("Dark Mode")
         self._minority_report_checkbox.setToolTip(
             "Enable transparent dark-mode chrome. Inspired by Minority Report."
@@ -1301,6 +1330,7 @@ class MainWindow(QMainWindow):
                 back_stage_id=back_stage_id,
                 front_position=int(values["front_position"]),
                 back_position=int(values["back_position"]),
+                keep_tail_at_head=bool(values["keep_tail_at_head"]),
                 blocker=str(values["blocker"]),
                 pdf_links=str(values["pdf_links"]),
                 is_active=bool(values["is_active"]),
@@ -1328,13 +1358,21 @@ class MainWindow(QMainWindow):
             # Moving into fabrication implies engineering released the kit.
             release_state = "released"
 
-        next_back_stage_id = int(stage_from_id(kit.back_stage_id))
-        if target_stage == Stage.COMPLETE:
-            next_back_stage_id = int(Stage.COMPLETE)
+        next_back_stage_id = (
+            int(target_stage)
+            if bool(getattr(kit, "keep_tail_at_head", True))
+            else int(kit.back_stage_id)
+        )
 
         front_stage_id, back_stage_id = normalize_stage_span(
             front_stage_id=int(target_stage),
             back_stage_id=next_back_stage_id,
+        )
+        next_front_position = FabricationDatabase._entry_position_for_stage(front_stage_id)
+        next_back_position = (
+            next_front_position
+            if bool(getattr(kit, "keep_tail_at_head", True))
+            else int(getattr(kit, "back_position", FabricationDatabase._entry_position_for_stage(back_stage_id)))
         )
 
         try:
@@ -1343,6 +1381,9 @@ class MainWindow(QMainWindow):
                 release_state=release_state,
                 front_stage_id=front_stage_id,
                 back_stage_id=back_stage_id,
+                front_position=next_front_position,
+                back_position=next_back_position,
+                keep_tail_at_head=bool(getattr(kit, "keep_tail_at_head", True)),
                 blocker=kit.blocker,
                 is_active=kit.is_active,
             )
@@ -1850,32 +1891,6 @@ class MainWindow(QMainWindow):
             dark_mode=bool(self._minority_report_mode),
         )
 
-    def _render_hi_res_gantt_chart_png(
-        self,
-        rows: list[OverlayRow],
-        *,
-        current_week: float,
-        min_week: float,
-        max_week: float,
-    ) -> bytes | None:
-        return render_overlay_png(
-            rows=rows,
-            current_week=current_week,
-            min_week=min_week,
-            max_week=max_week,
-            week_label=self._week_value_to_date_label,
-            fig_width=18.0,
-            dpi=220,
-            bar_height=0.42,
-            fig_min_height=1.4,
-            fig_height_per_row=0.16,
-            y_label_size=7.0,
-            x_label_size=7.0,
-            x_label_text="",
-            legend_size=8.0,
-            dark_mode=bool(self._minority_report_mode),
-        )
-
     @staticmethod
     def _gantt_target_width(context: dict[str, object]) -> int:
         chart_scroll = context["chart_scroll"]
@@ -2009,7 +2024,7 @@ class MainWindow(QMainWindow):
                     actual[idx] = "-"
             actual[back_idx] = "o"
             actual[front_idx] = "O"
-            if row.is_behind:
+            if row.is_behind and row.released and not row.blocked:
                 target_week = current_week if row.status_key in {"red", "yellow"} else (
                     row.expected_week if row.expected_week is not None else current_week
                 )
@@ -2165,7 +2180,7 @@ class MainWindow(QMainWindow):
             }
             """
         )
-        frame.setMinimumHeight(100)
+        frame.setMinimumHeight(78)
 
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(10, 8, 10, 8)
@@ -2185,25 +2200,17 @@ class MainWindow(QMainWindow):
         for name in ("red", "yellow", "green"):
             light = QFrame()
             light.setFixedSize(24, 24)
-            light.setStyleSheet("border-radius: 12px; background-color: #CBD5E1; border: 1px solid #94A3B8;")
             lights_row.addWidget(light)
             light_widgets[name] = light
 
         layout.addLayout(lights_row)
-
-        detail_label = QLabel("")
-        detail_label.setWordWrap(True)
-        detail_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        detail_label.setStyleSheet("font-size: 11px; color: #475569;")
-        detail_label.setFixedHeight(SIGNAL_TILE_DETAIL_HEIGHT)
-        layout.addWidget(detail_label)
 
         layout.addStretch(1)
 
         tile: dict[str, object] = {
             "frame": frame,
             "title": title_label,
-            "detail": detail_label,
+            "detail": None,
             "signal_lights": light_widgets,
             "signal_state": "off",
         }
@@ -2216,20 +2223,33 @@ class MainWindow(QMainWindow):
             return
 
         dark = bool(self._minority_report_mode)
-        off_fill = "#163042" if dark else "#E2E8F0"
-        off_border = "#4D748A" if dark else "#94A3B8"
         palette = {
-            "red": ("#FF6B6B", "#FFD1D1") if dark else ("#DC2626", "#991B1B"),
-            "yellow": ("#FFD166", "#FFE7A3") if dark else ("#F59E0B", "#B45309"),
-            "green": ("#6DFFB0", "#C8FFE0") if dark else ("#16A34A", "#166534"),
+            "red": {
+                "active_fill": "#FF6B6B" if dark else "#DC2626",
+                "active_border": "#FFD1D1" if dark else "#991B1B",
+                "inactive_fill": "rgba(255, 107, 107, 0.28)" if dark else "rgba(220, 38, 38, 0.22)",
+                "inactive_border": "rgba(255, 209, 209, 0.65)" if dark else "rgba(153, 27, 27, 0.38)",
+            },
+            "yellow": {
+                "active_fill": "#FFD166" if dark else "#F59E0B",
+                "active_border": "#FFE7A3" if dark else "#B45309",
+                "inactive_fill": "rgba(255, 209, 102, 0.28)" if dark else "rgba(245, 158, 11, 0.22)",
+                "inactive_border": "rgba(255, 231, 163, 0.7)" if dark else "rgba(180, 83, 9, 0.38)",
+            },
+            "green": {
+                "active_fill": "#6DFFB0" if dark else "#16A34A",
+                "active_border": "#C8FFE0" if dark else "#166534",
+                "inactive_fill": "rgba(109, 255, 176, 0.28)" if dark else "rgba(22, 163, 74, 0.22)",
+                "inactive_border": "rgba(200, 255, 224, 0.7)" if dark else "rgba(22, 101, 52, 0.38)",
+            },
         }
 
         for name, widget in lights.items():
             if not isinstance(widget, QFrame):
                 continue
-            active_fill, active_border = palette.get(name, (off_fill, off_border))
-            fill = active_fill if name == state else off_fill
-            border = active_border if name == state else off_border
+            colors = palette.get(name, palette["red"])
+            fill = colors["active_fill"] if name == state else colors["inactive_fill"]
+            border = colors["active_border"] if name == state else colors["inactive_border"]
             widget.setStyleSheet(
                 f"border-radius: 12px; background-color: {fill}; border: 1px solid {border};"
             )
@@ -2255,7 +2275,7 @@ class MainWindow(QMainWindow):
             return
         detail_label = tile.get("detail")
         if isinstance(detail_label, QLabel):
-            detail_label.setText(self._format_signal_drivers(drivers))
+            detail_label.setText("")
 
     def _update_schedule_panel(self) -> None:
         if not self._schedule_insights:
@@ -2483,25 +2503,10 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "No Data", "No dashboard data is available to publish.")
                 return
 
+        payload_size = 0
+        row_limit = 0
         try:
-            dashboard_metrics = compute_dashboard_metrics(
-                self._trucks,
-                schedule_insights=self._schedule_insights,
-            )
-            snapshot_metrics = compute_snapshot_metrics(
-                self._trucks,
-                schedule_insights=self._schedule_insights,
-                dashboard_metrics=dashboard_metrics,
-            )
-
-            project_root = Path(__file__).resolve().parent
-            artifacts = publish_compact_artifacts(
-                project_root=project_root,
-                trucks=self._trucks,
-                dashboard_metrics=dashboard_metrics,
-                schedule_insights=self._schedule_insights,
-                snapshot_metrics=snapshot_metrics,
-            )
+            dashboard_metrics, _snapshot_metrics, artifacts = self._build_publish_artifacts()
 
             payload, payload_size, row_limit = self._build_sized_dashboard_publish_payload(
                 max_payload_bytes=TEAMS_ADAPTIVE_CARD_MAX_PAYLOAD_BYTES,
@@ -2510,6 +2515,7 @@ class MainWindow(QMainWindow):
                 generated_at=artifacts.generated_at,
             )
 
+            project_root = Path(__file__).resolve().parent
             output_path = project_root / "_runtime" / "teams_dashboard_card.json"
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -2564,278 +2570,54 @@ class MainWindow(QMainWindow):
                 f"Unexpected error while publishing: {exc}",
             )
 
-    def _publish_gantt_only_to_teams(self) -> None:
-        webhook_url = self._current_teams_webhook_url()
-        if not webhook_url:
-            QMessageBox.warning(
-                self,
-                "Webhook URL Required",
-                "Enter a Teams/Power Automate webhook URL first.",
-            )
-            return
-
-        self.refresh_view()
-        if self._schedule_insights is None:
-            QMessageBox.warning(self, "No Data", "No gantt data is available to publish.")
-            return
-
-        payload, payload_size, row_limit, image_enabled = self._build_sized_gantt_publish_payload(
-            max_payload_bytes=TEAMS_ADAPTIVE_CARD_MAX_PAYLOAD_BYTES
-        )
-
-        output_path = Path(__file__).resolve().parent / "_runtime" / "teams_gantt_only_card.json"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-        try:
-            status = self._post_json_webhook(webhook_url, payload)
-            image_state = "image" if image_enabled else "text"
-            self.statusBar().showMessage(
-                f"Published gantt card to Teams ({status}, {payload_size} bytes, {row_limit} rows, {image_state}).",
-                5000,
-            )
-            QMessageBox.information(
-                self,
-                "Published",
-                (
-                    "Gantt-only card published to Teams.\n"
-                    f"HTTP status: {status}\n"
-                    f"Payload bytes: {payload_size}\n"
-                    f"Rows: {row_limit}\n"
-                    f"Mode: {image_state}\n"
-                    f"Payload: {output_path}"
-                ),
-            )
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace").strip()
-            body = f"\n\n{detail}" if detail else ""
-            QMessageBox.critical(
-                self,
-                "Publish Failed",
-                (
-                    f"Webhook HTTP error {exc.code}: {exc.reason}\n"
-                    f"Payload bytes: {payload_size}\n"
-                    f"Rows: {row_limit}\n"
-                    f"Mode: {'image' if image_enabled else 'text'}"
-                    f"{body}"
-                ),
-            )
-        except urllib.error.URLError as exc:
-            QMessageBox.critical(
-                self,
-                "Publish Failed",
-                f"Webhook URL error: {exc.reason}",
-            )
-        except OSError as exc:
-            QMessageBox.critical(
-                self,
-                "Publish Failed",
-                f"Unexpected error while publishing: {exc}",
-            )
-
-    def _save_hi_res_gantt_to_sync_folder(self) -> None:
+    def _publish_gantt_artifacts_only(self) -> None:
         if self._schedule_insights is None:
             self.refresh_view()
             if self._schedule_insights is None:
-                QMessageBox.warning(self, "No Data", "No gantt data is available to save.")
+                QMessageBox.warning(self, "No Data", "No dashboard data is available to publish.")
                 return
 
-        rows = build_overlay_rows(
-            trucks=list(self._trucks),
-            schedule_insights=self._schedule_insights,
-            max_rows=max(1, len(self._trucks) * 8),
-        )
-        if not rows:
-            QMessageBox.warning(self, "No Data", "No gantt rows are available to export.")
-            return
-
-        current_week = float(self._schedule_insights.current_week)
-        min_week, max_week = compute_overlay_viewport(
-            rows=rows,
-            current_week=current_week,
-            forward_horizon_weeks=8.0,
-            side_padding_weeks=0.35,
-        )
-        png_data = self._render_hi_res_gantt_chart_png(
-            rows=rows,
-            current_week=current_week,
-            min_week=min_week,
-            max_week=max_week,
-        )
-        if not png_data:
-            QMessageBox.warning(self, "Export Failed", "Could not render the hi-res gantt PNG.")
-            return
-
-        output_dir = HI_RES_GANTT_EXPORT_DIR
-        output_path = output_dir / HI_RES_GANTT_FILENAME
         try:
-            output_dir.mkdir(parents=True, exist_ok=True)
-            output_path.write_bytes(png_data)
+            _dashboard_metrics, _snapshot_metrics, artifacts = self._build_publish_artifacts()
         except OSError as exc:
             QMessageBox.critical(
                 self,
-                "Save Failed",
-                f"Could not save hi-res gantt PNG:\n{output_path}\n\n{exc}",
+                "Gantt Update Failed",
+                f"Could not update published gantt: {exc}",
             )
             return
 
-        self.statusBar().showMessage(f"Saved hi-res gantt: {output_path}", 5000)
-        QMessageBox.information(
-            self,
-            "Saved",
-            f"Saved hi-res gantt PNG:\n{output_path}",
+        self.statusBar().showMessage(
+            (
+                f"Published gantt updated: {artifacts.gantt_png_path or 'not generated'}"
+                if artifacts.gantt_png_path
+                else "Published gantt update completed."
+            ),
+            5000,
         )
 
-    def _publish_sharepoint_link_test_card(self) -> None:
-        webhook_url = self._current_teams_webhook_url()
-        if not webhook_url:
-            QMessageBox.warning(
-                self,
-                "Webhook URL Required",
-                "Enter a Teams/Power Automate webhook URL first.",
-            )
-            return
-
-        payload: dict[str, object] = {
-            "type": "message",
-            "attachments": [
-                {
-                    "contentType": "application/vnd.microsoft.card.adaptive",
-                    "contentUrl": None,
-                    "content": {
-                        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                        "type": "AdaptiveCard",
-                        "version": "1.4",
-                        "msteams": {"width": "Full"},
-                        "body": [
-                            {
-                                "type": "TextBlock",
-                                "text": "SharePoint Gantt Link Test",
-                                "size": "Large",
-                                "weight": "Bolder",
-                                "wrap": True,
-                            },
-                            {
-                                "type": "TextBlock",
-                                "text": "This is a temporary card to test whether the synced gantt link opens correctly.",
-                                "wrap": True,
-                                "spacing": "Small",
-                            },
-                            {
-                                "type": "TextBlock",
-                                "text": TEMP_SHAREPOINT_GANTT_URL,
-                                "isSubtle": True,
-                                "wrap": True,
-                                "spacing": "Small",
-                            },
-                        ],
-                        "actions": [
-                            {
-                                "type": "Action.OpenUrl",
-                                "title": "Open Gantt in SharePoint",
-                                "url": TEMP_SHAREPOINT_GANTT_URL,
-                            }
-                        ],
-                    },
-                }
-            ],
-        }
-
-        output_path = Path(__file__).resolve().parent / "_runtime" / "teams_sharepoint_link_test_card.json"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-        try:
-            status = self._post_json_webhook(webhook_url, payload)
-            self.statusBar().showMessage(f"Published SharePoint link test card ({status}).", 5000)
-            QMessageBox.information(
-                self,
-                "Published",
-                (
-                    "SharePoint link test card published to Teams.\n"
-                    f"HTTP status: {status}\n"
-                    f"Link: {TEMP_SHAREPOINT_GANTT_URL}\n"
-                    f"Payload: {output_path}"
-                ),
-            )
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace").strip()
-            body = f"\n\n{detail}" if detail else ""
-            QMessageBox.critical(
-                self,
-                "Publish Failed",
-                f"Webhook HTTP error {exc.code}: {exc.reason}{body}",
-            )
-        except urllib.error.URLError as exc:
-            QMessageBox.critical(
-                self,
-                "Publish Failed",
-                f"Webhook URL error: {exc.reason}",
-            )
-        except OSError as exc:
-            QMessageBox.critical(
-                self,
-                "Publish Failed",
-                f"Unexpected error while publishing: {exc}",
-            )
-
-    def _build_sized_gantt_publish_payload(
+    def _build_publish_artifacts(
         self,
-        *,
-        max_payload_bytes: int,
-    ) -> tuple[dict[str, object], int, int, bool]:
-        if self._schedule_insights is None:
-            return ({}, 0, 0, False)
-
-        candidates: tuple[tuple[int, bool], ...] = (
-            # Try richest card first, then progressively reduce rows and finally disable image.
-            (24, True),
-            (20, True),
-            (16, True),
-            (12, True),
-            (10, True),
-            (24, False),
-            (20, False),
-            (16, False),
-            (12, False),
-            (8, False),
-            (6, False),
-        )
-
-        best_payload: dict[str, object] | None = None
-        best_size: int | None = None
-        best_rows = 0
-        best_image = False
-
-        for max_rows, allow_image in candidates:
-            payload = build_teams_gantt_only_webhook_payload(
-                trucks=self._trucks,
-                schedule_insights=self._schedule_insights,
-                max_trucks=max_rows,
-                mention_name="cevenson",
-                allow_image=allow_image,
-            )
-            payload_size = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
-            if best_size is None or payload_size < best_size:
-                best_payload = payload
-                best_size = payload_size
-                best_rows = max_rows
-                best_image = allow_image
-            if payload_size <= max_payload_bytes:
-                return (payload, payload_size, max_rows, allow_image)
-
-        if best_payload is not None and best_size is not None:
-            return (best_payload, best_size, best_rows, best_image)
-
-        payload = build_teams_gantt_only_webhook_payload(
-            trucks=self._trucks,
+    ) -> tuple[DashboardMetrics, SnapshotMetrics, ArtifactPublishResult]:
+        dashboard_metrics = compute_dashboard_metrics(
+            self._trucks,
             schedule_insights=self._schedule_insights,
-            max_trucks=6,
-            mention_name="cevenson",
-            allow_image=False,
         )
-        payload_size = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
-        return (payload, payload_size, 6, False)
+        snapshot_metrics = compute_snapshot_metrics(
+            self._trucks,
+            schedule_insights=self._schedule_insights,
+            dashboard_metrics=dashboard_metrics,
+        )
+
+        project_root = Path(__file__).resolve().parent
+        artifacts = publish_compact_artifacts(
+            project_root=project_root,
+            trucks=self._trucks,
+            dashboard_metrics=dashboard_metrics,
+            schedule_insights=self._schedule_insights,
+            snapshot_metrics=snapshot_metrics,
+        )
+        return (dashboard_metrics, snapshot_metrics, artifacts)
 
     def _build_sized_dashboard_publish_payload(
         self,

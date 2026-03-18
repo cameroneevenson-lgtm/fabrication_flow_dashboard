@@ -281,8 +281,8 @@ def classify_front_status(
 ) -> tuple[str, str]:
     # Reduced decision rules:
     # - blocked => red
-    # - unreleased overdue => red
-    # - unreleased due within 1 week => yellow
+    # - unreleased more than 1 week overdue => red
+    # - unreleased up to 1 week overdue => yellow
     # - unreleased not due yet => black
     # - released late in final weld => yellow
     # - released within +/- tolerance of master timeline => green
@@ -294,9 +294,9 @@ def classify_front_status(
     if not released:
         if expected_week is not None and current_week is not None:
             due_delta = float(expected_week) - float(current_week)
-            if due_delta < 0.0:
+            if due_delta < -float(schedule_tolerance_weeks):
                 return ("red", STATUS_COLORS["red"])
-            if due_delta <= 1.0:
+            if due_delta <= 0.0:
                 return ("yellow", STATUS_COLORS["yellow"])
             return ("black", STATUS_COLORS["black"])
         if expected_position >= LASER_START_POSITION:
@@ -421,23 +421,29 @@ def build_overlay_rows(
                     windows=baseline_windows,
                     fallback_week=float(schedule_insights.current_week),
                 )
+            release_due_week = min(float(start) for start, _end in baseline_windows.values())
+            comparison_due_week = release_due_week if not released else scheduled_front_week
             status_key, status_color = classify_front_status(
                 released=released,
                 blocked=blocked,
                 front_stage=front_stage,
                 expected_position=expected_position,
                 front_position=display_front_position,
-                expected_week=scheduled_front_week,
+                expected_week=comparison_due_week,
                 front_week=front_week,
                 current_week=float(schedule_insights.current_week),
             )
-            is_not_due = (not released) and expected_position < LASER_START_POSITION
+            is_not_due = (not released) and (float(release_due_week) > float(schedule_insights.current_week))
+            unreleased_overdue = bool(
+                (not released)
+                and float(release_due_week) < float(schedule_insights.current_week)
+            )
             is_behind = bool(
                 (released and float(front_week) < float(schedule_insights.current_week))
                 or (released and scheduled_front_week is not None and (float(front_week) < (float(scheduled_front_week) - 1.0)))
-                or ((not released) and status_key == "red")
+                or unreleased_overdue
             )
-            expected_week: float | None = scheduled_front_week if is_behind else None
+            expected_week: float | None = comparison_due_week if is_behind else None
 
             latest_due_week = max(float(end) for _start, end in baseline_windows.values())
             truck_label = str(truck.truck_number or "Truck?").strip() or "Truck?"
@@ -527,6 +533,7 @@ def compute_overlay_viewport(
     current_week: float,
     forward_horizon_weeks: float = 8.0,
     side_padding_weeks: float = 0.35,
+    extend_to_latest_due_week: bool = True,
 ) -> tuple[float, float]:
     week_start_anchor = math.floor(float(current_week))
     if not rows:
@@ -542,8 +549,10 @@ def compute_overlay_viewport(
     ]
     left_anchor = min(behind_left_edges) if behind_left_edges else float(week_start_anchor)
 
-    latest_due_week = max(float(row.latest_due_week) for row in rows)
-    right_anchor = max(float(week_start_anchor) + float(forward_horizon_weeks), latest_due_week)
+    right_anchor = float(week_start_anchor) + float(forward_horizon_weeks)
+    if extend_to_latest_due_week:
+        latest_due_week = max(float(row.latest_due_week) for row in rows)
+        right_anchor = max(right_anchor, latest_due_week)
 
     min_week = min(left_anchor, float(week_start_anchor)) - float(side_padding_weeks)
     max_week = right_anchor + float(side_padding_weeks)
@@ -674,7 +683,7 @@ def render_overlay_png(
             zorder=7,
         )
 
-        if row.is_behind:
+        if row.is_behind and row.released and not row.blocked:
             target_week_value = float(current_week)
             if row.status_key not in {"red", "yellow"} and float(row.front_week) >= float(current_week):
                 target_week_value = float(row.expected_week) if row.expected_week is not None else float(current_week)

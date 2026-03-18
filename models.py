@@ -59,6 +59,7 @@ class TruckKit:
     back_stage_id: int = int(Stage.RELEASE)
     front_position: int = 10
     back_position: int = 10
+    keep_tail_at_head: bool = True
     blocker: str = ""
     pdf_links: str = ""
     is_active: bool = True

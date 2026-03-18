@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import base64
 import html
 import json
 import os
@@ -12,7 +10,7 @@ from typing import Any
 from metrics import DashboardMetrics, SnapshotMetrics
 from models import Truck
 from schedule import ScheduleInsights
-from teams_card import build_teams_gantt_only_webhook_payload
+from teams_card import render_published_gantt_png_bytes
 
 ARTIFACT_LINK_KEYS = ("summary_html_url", "gantt_png_url", "status_json_url")
 ARTIFACT_LINK_ENV = {
@@ -20,6 +18,10 @@ ARTIFACT_LINK_ENV = {
     "gantt_png_url": "FABRICATION_FLOW_GANTT_PNG_URL",
     "status_json_url": "FABRICATION_FLOW_STATUS_JSON_URL",
 }
+SHAREPOINT_GANTT_SYNC_DIR = Path(
+    r"C:\Users\athankachan\BATTLESHIELD INDUSTRIES LIMITED\Manufacturing - Fire Truck Fabrication"
+)
+SHAREPOINT_GANTT_FILENAME = "fabrication_gantt_hi_res.png"
 
 
 @dataclass(frozen=True)
@@ -82,45 +84,12 @@ def _extract_gantt_png_bytes(
     *,
     trucks: list[Truck],
     schedule_insights: ScheduleInsights,
-    generated_at: datetime,
 ) -> bytes | None:
-    payload = build_teams_gantt_only_webhook_payload(
+    return render_published_gantt_png_bytes(
         trucks=trucks,
         schedule_insights=schedule_insights,
-        max_trucks=12,
-        mention_name="",
-        generated_at=generated_at,
-        allow_image=True,
+        max_rows=max(1, len(trucks) * 8),
     )
-
-    attachments = payload.get("attachments")
-    if not isinstance(attachments, list) or not attachments:
-        return None
-    first = attachments[0]
-    if not isinstance(first, dict):
-        return None
-    content = first.get("content")
-    if not isinstance(content, dict):
-        return None
-    body = content.get("body")
-    if not isinstance(body, list):
-        return None
-
-    prefix = "data:image/png;base64,"
-    for item in body:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("type", "")).strip() != "Image":
-            continue
-        url = str(item.get("url", "")).strip()
-        if not url.startswith(prefix):
-            continue
-        encoded = url[len(prefix) :]
-        try:
-            return base64.b64decode(encoded, validate=True)
-        except (ValueError, TypeError):
-            return None
-    return None
 
 
 def _truck_row_sort_key(row: Any) -> tuple[int, int, str]:
@@ -295,10 +264,14 @@ def publish_compact_artifacts(
     gantt_png_bytes = _extract_gantt_png_bytes(
         trucks=trucks,
         schedule_insights=schedule_insights,
-        generated_at=generated,
     )
     if gantt_png_bytes:
         gantt_png_path.write_bytes(gantt_png_bytes)
+        try:
+            SHAREPOINT_GANTT_SYNC_DIR.mkdir(parents=True, exist_ok=True)
+            (SHAREPOINT_GANTT_SYNC_DIR / SHAREPOINT_GANTT_FILENAME).write_bytes(gantt_png_bytes)
+        except OSError:
+            pass
         resolved_gantt_path: Path | None = gantt_png_path
     else:
         resolved_gantt_path = gantt_png_path if gantt_png_path.exists() else None

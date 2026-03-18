@@ -51,7 +51,7 @@ A PySide6 application for tracking fabrication flow and schedule signals.
 - `stages.py` - canonical `Stage` enum and metadata
 - `schedule.py` - schedule insights and release/concurrency calculations
 - `metrics.py` - dashboard metrics and attention signals
-- `teams_card.py` - compact Microsoft Teams Adaptive Card payload builders
+- `teams_card.py` - compact Microsoft Teams Adaptive Card payload builders and shared gantt rendering helpers
 - `publish_artifacts.py` - published artifact generation and link resolution for Teams actions
 - `export_ops_snapshot_teams_card.py` - export/post Teams webhook JSON payload
 - `truck_registry.csv` - truck registry input
@@ -93,7 +93,7 @@ Optional link configuration:
   - `FABRICATION_FLOW_STATUS_JSON_URL`
 - If no published URLs are configured, local file URIs are used as fallback action targets.
 
-Generate the webhook JSON payload:
+Generate the webhook JSON payload from the same publish flow used by the UI:
 
 ```powershell
 .\.venv\Scripts\python.exe export_ops_snapshot_teams_card.py --output _runtime\teams_dashboard_card.json

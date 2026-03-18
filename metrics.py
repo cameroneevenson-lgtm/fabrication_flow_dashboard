@@ -340,7 +340,7 @@ def _compute_bend_buffer(trucks: list[Truck]) -> BendBufferHealth:
                     if not tail_driver:
                         tail_driver = _driver_label(truck, kit, "tail")
 
-    if front_buffer_count >= 3:
+    if front_buffer_count >= 2:
         count = front_buffer_count
         level = "healthy"
         drivers = tuple(front_drivers)
@@ -490,7 +490,7 @@ def _compute_weld_feed_a(trucks: list[Truck]) -> WeldFeedStatus:
             drivers.append(_driver_label(next_truck, next_body, next_note))
 
         if next_ready:
-            level = "watch" if progress_percent >= 100 else "healthy"
+            level = "healthy"
         else:
             level = "low" if progress_percent >= 50 else "watch"
         return WeldFeedStatus(score=float(progress_percent), level=level, drivers=tuple(drivers))
@@ -530,7 +530,7 @@ def _compute_weld_feed(trucks: list[Truck], feed: str | None = None) -> WeldFeed
 
     if feed == "b":
         low_threshold = 1.5
-        healthy_threshold = 3.0
+        healthy_threshold = 2.0
     else:
         low_threshold = 2.0
         healthy_threshold = 4.0

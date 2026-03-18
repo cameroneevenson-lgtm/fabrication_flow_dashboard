@@ -11,7 +11,7 @@ from gantt_overlay import (
     compute_overlay_viewport,
     render_overlay_png,
 )
-from metrics import DashboardMetrics, SnapshotMetrics, compute_snapshot_metrics
+from metrics import DashboardMetrics
 from models import Truck, TruckKit
 from schedule import ScheduleInsights
 from stages import STAGE_SEQUENCE, Stage, stage_from_id, stage_label
@@ -31,6 +31,56 @@ def _tone_to_adaptive_color(tone: str) -> str:
 
 
 def _tile_column(label: str, value: str, detail: str, tone: str) -> dict[str, Any]:
+    items: list[dict[str, Any]] = [
+        {
+            "type": "TextBlock",
+            "text": label,
+            "size": "Small",
+            "isSubtle": True,
+            "wrap": True,
+        },
+        {
+            "type": "TextBlock",
+            "text": value,
+            "weight": "Bolder",
+            "size": "Medium",
+            "color": _tone_to_adaptive_color(tone),
+            "wrap": True,
+        },
+    ]
+    if str(detail or "").strip():
+        items.append(
+            {
+                "type": "TextBlock",
+                "text": detail,
+                "size": "Small",
+                "wrap": True,
+                "spacing": "None",
+            }
+        )
+    return {
+        "type": "Column",
+        "width": "stretch",
+        "items": items,
+    }
+
+
+def _signal_emoji(level: str, *, family: str) -> str:
+    normalized = str(level or "").strip().lower()
+    if family in {"laser", "brake"}:
+        if normalized == "healthy":
+            return "🟢"
+        if normalized == "low":
+            return "🟡"
+        return "🔴"
+    if normalized == "healthy":
+        return "🟢"
+    if normalized == "watch":
+        return "🟡"
+    return "🔴"
+
+
+def _signal_column(label: str, emoji: str) -> dict[str, Any]:
     return {
         "type": "Column",
         "width": "stretch",
@@ -41,21 +91,71 @@ def _tile_column(label: str, value: str, detail: str, tone: str) -> dict[str, An
                 "size": "Small",
                 "isSubtle": True,
                 "wrap": True,
+                "horizontalAlignment": "Center",
             },
             {
                 "type": "TextBlock",
-                "text": value,
-                "weight": "Bolder",
-                "size": "Medium",
-                "color": _tone_to_adaptive_color(tone),
+                "text": emoji,
+                "size": "ExtraLarge",
                 "wrap": True,
+                "horizontalAlignment": "Center",
             },
+        ],
+    }
+
+
+def _signal_state(level: str, *, family: str) -> str:
+    normalized = str(level or "").strip().lower()
+    if family in {"laser", "brake"}:
+        if normalized == "healthy":
+            return "green"
+        if normalized == "low":
+            return "yellow"
+        return "red"
+    if normalized == "healthy":
+        return "green"
+    if normalized == "watch":
+        return "yellow"
+    return "red"
+
+
+def _signal_light_column(label: str, state: str) -> dict[str, Any]:
+    color_by_light = {
+        "red": "Attention",
+        "yellow": "Warning",
+        "green": "Good",
+    }
+    inlines: list[dict[str, Any]] = []
+    for index, light in enumerate(("red", "yellow", "green")):
+        inlines.append(
+            {
+                "type": "TextRun",
+                "text": "●",
+                "color": color_by_light[light],
+                "isSubtle": light != state,
+                "weight": "Bolder" if light == state else "Default",
+                "size": "Large",
+            }
+        )
+        if index < 2:
+            inlines.append({"type": "TextRun", "text": " "})
+
+    return {
+        "type": "Column",
+        "width": "stretch",
+        "items": [
             {
                 "type": "TextBlock",
-                "text": detail,
+                "text": label,
                 "size": "Small",
+                "isSubtle": True,
                 "wrap": True,
-                "spacing": "None",
+                "horizontalAlignment": "Center",
+            },
+            {
+                "type": "RichTextBlock",
+                "horizontalAlignment": "Center",
+                "inlines": inlines,
             },
         ],
     }
@@ -108,11 +208,12 @@ def _build_truck_risk_text(truck: Truck, hold_count: int) -> tuple[str, str]:
 
 
 def _kit_stage_text(kit: TruckKit) -> str:
-    release_text = "released" if kit.release_state == "released" else "not released"
-    front = stage_label(kit.front_stage_id)
-    back = stage_label(kit.back_stage_id)
-    blocked = " | blocked" if str(kit.blocker or "").strip() else ""
-    return f"{release_text} | {front}->{back}{blocked}"
+    front_stage = stage_from_id(kit.front_stage_id)
+    if front_stage == Stage.RELEASE:
+        return "released" if kit.release_state == "released" else "unreleased"
+    if front_stage == Stage.COMPLETE:
+        return "complete"
+    return stage_label(front_stage)
 
 
 def _current_week_of_label() -> str:
@@ -129,12 +230,54 @@ def _week_value_to_date_label(week_value: float, current_week: float) -> str:
     return target_date.strftime("%b %d, %Y")
 
 
-def _safe_toggle_id(value: str, fallback_index: int) -> str:
-    clean = "".join(ch if ch.isalnum() else "_" for ch in str(value or "").strip())
-    clean = clean.strip("_")
-    if not clean:
-        clean = f"truck_{fallback_index}"
-    return f"truck_details_{clean.lower()}"
+def _format_late_weeks(value: float) -> str:
+    rounded_weeks = max(0, int(float(value) + 0.5))
+    unit = "week" if rounded_weeks == 1 else "weeks"
+    return f"{rounded_weeks} {unit} late"
+
+
+def _build_desktop_red_attention_lines(
+    *,
+    trucks: list[Truck],
+    dashboard_metrics: DashboardMetrics,
+    schedule_insights: ScheduleInsights,
+) -> list[str]:
+    hold_items = list(schedule_insights.release_hold_items)
+    duplicated_signal_titles = {
+        "Next Body not released",
+        "Weld feed low",
+        "Bend buffer dry",
+        "Bend buffer low",
+        "No urgent flow risks",
+    }
+
+    lines: list[str] = []
+    shown_count = 0
+    seen_texts: set[str] = set()
+    for item in dashboard_metrics.attention_items:
+        if hold_items and item.title == "Engineering release is holding work start":
+            continue
+        if item.title in duplicated_signal_titles:
+            continue
+        if int(item.priority) < 90:
+            continue
+
+        shown_count += 1
+        text = f"{shown_count}. {item.title}: {item.detail}"
+        if text in seen_texts:
+            continue
+        seen_texts.add(text)
+        lines.append(text)
+
+    next_index = shown_count + 1
+    for row_offset, hold in enumerate(hold_items):
+        rank = next_index + row_offset
+        lines.append(
+            f"{rank}. Late Release: {hold.truck_number} {hold.kit_name} "
+            f"({_format_late_weeks(hold.hold_weeks)})"
+        )
+
+    return lines
 
 
 def _week_to_index(week_value: float, min_week: float, max_week: float, width: int) -> int:
@@ -189,15 +332,29 @@ def _compress_png_bytes(raw: bytes, *, max_bytes: int) -> bytes:
         return best
 
     return best
-
-
-def _render_gantt_png_data_uri(
-    rows: list[OverlayRow],
+def render_compact_gantt_png_bytes(
     *,
-    current_week: float,
-    min_week: float,
-    max_week: float,
-) -> str | None:
+    trucks: list[Truck],
+    schedule_insights: ScheduleInsights,
+    max_rows: int = 12,
+) -> bytes | None:
+    rows = build_overlay_rows(
+        trucks=trucks,
+        schedule_insights=schedule_insights,
+        max_rows=max(1, int(max_rows)),
+    )
+    if not rows:
+        return None
+
+    current_week = float(schedule_insights.current_week)
+    min_week, max_week = compute_overlay_viewport(
+        rows=rows,
+        current_week=current_week,
+        forward_horizon_weeks=4.0,
+        side_padding_weeks=0.35,
+        extend_to_latest_due_week=False,
+    )
+
     raw = render_overlay_png(
         rows=rows,
         current_week=current_week,
@@ -214,12 +371,52 @@ def _render_gantt_png_data_uri(
     )
     if not raw:
         return None
+
     compressed = _compress_png_bytes(raw, max_bytes=TEAMS_GANTT_MAX_PNG_BYTES)
     if len(compressed) > TEAMS_GANTT_MAX_PNG_BYTES:
         return None
+    return compressed
 
-    encoded = base64.b64encode(compressed).decode("ascii")
-    return f"data:image/png;base64,{encoded}"
+
+def render_published_gantt_png_bytes(
+    *,
+    trucks: list[Truck],
+    schedule_insights: ScheduleInsights,
+    max_rows: int = 120,
+) -> bytes | None:
+    rows = build_overlay_rows(
+        trucks=trucks,
+        schedule_insights=schedule_insights,
+        max_rows=max(1, int(max_rows)),
+    )
+    if not rows:
+        return None
+
+    current_week = float(schedule_insights.current_week)
+    min_week, max_week = compute_overlay_viewport(
+        rows=rows,
+        current_week=current_week,
+        forward_horizon_weeks=4.0,
+        side_padding_weeks=0.35,
+        extend_to_latest_due_week=False,
+    )
+
+    return render_overlay_png(
+        rows=rows,
+        current_week=current_week,
+        min_week=min_week,
+        max_week=max_week,
+        week_label=_week_value_to_date_label,
+        fig_width=24.0,
+        dpi=320,
+        bar_height=0.48,
+        fig_min_height=2.0,
+        fig_height_per_row=0.22,
+        y_label_size=8.5,
+        x_label_size=8.5,
+        x_label_text="Week of",
+        legend_size=9.5,
+    )
 
 
 def _build_scheduled_vs_actual_gantt_items(
@@ -229,6 +426,7 @@ def _build_scheduled_vs_actual_gantt_items(
     max_rows: int,
     chart_width: int = 26,
     allow_image: bool = True,
+    gantt_link_url: str = "",
 ) -> list[dict[str, Any]]:
     rows = build_overlay_rows(
         trucks=trucks,
@@ -250,19 +448,36 @@ def _build_scheduled_vs_actual_gantt_items(
     min_week, max_week = compute_overlay_viewport(
         rows=rows,
         current_week=current_week,
-        forward_horizon_weeks=8.0,
+        forward_horizon_weeks=4.0,
         side_padding_weeks=0.35,
+        extend_to_latest_due_week=False,
     )
 
     image_url: str | None = None
     if allow_image:
-        image_url = _render_gantt_png_data_uri(
-            rows,
-            current_week=current_week,
-            min_week=float(min_week),
-            max_week=float(max_week),
+        image_bytes = render_compact_gantt_png_bytes(
+            trucks=trucks,
+            schedule_insights=schedule_insights,
+            max_rows=max_rows,
         )
+        if image_bytes:
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            image_url = f"data:image/png;base64,{encoded}"
+    if not image_url and gantt_link_url:
+        image_url = gantt_link_url
     if image_url:
+        image_item: dict[str, Any] = {
+            "type": "Image",
+            "url": image_url,
+            "size": "Stretch",
+            "altText": "Master schedule vs actual gantt",
+            "spacing": "Small",
+        }
+        if gantt_link_url:
+            image_item["selectAction"] = {
+                "type": "Action.OpenUrl",
+                "url": gantt_link_url,
+            }
         return [
             {
                 "type": "TextBlock",
@@ -272,22 +487,13 @@ def _build_scheduled_vs_actual_gantt_items(
                 "wrap": True,
             },
             {
-                "type": "Image",
-                "url": image_url,
-                "size": "Stretch",
-                "altText": "Master schedule vs actual gantt",
-                "spacing": "Small",
-            },
-            {
                 "type": "TextBlock",
-                "text": (
-                    "Front marker colors: black not due, red blocked/late release, yellow behind, "
-                    "green on schedule, blue ahead. Back marker stays neutral."
-                ),
-                "isSubtle": True,
+                "text": "Click to open full-size schedule",
+                "weight": "Bolder",
                 "spacing": "Small",
                 "wrap": True,
             },
+            image_item,
         ]
 
     now_idx = _week_to_index(current_week, min_week, max_week, chart_width)
@@ -343,7 +549,7 @@ def _build_scheduled_vs_actual_gantt_items(
                 actual[idx] = "-"
         actual[back_idx] = "o"
         actual[front_idx] = "O"
-        if row.is_behind:
+        if row.is_behind and row.released and not row.blocked:
             target_week = current_week if row.status_key in {"red", "yellow"} else (
                 row.expected_week if row.expected_week is not None else current_week
             )
@@ -395,134 +601,59 @@ def build_dashboard_adaptive_card(
     schedule_insights: ScheduleInsights,
     max_trucks: int = 20,
     max_attention: int = 8,
+    artifact_links: dict[str, str] | None = None,
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
-    generated = generated_at or datetime.now(timezone.utc)
-    generated_text = generated.astimezone().strftime("%Y-%m-%d %H:%M %Z")
-    active_kits = _count_active_kits(trucks)
-    blocked_kits = _count_blocked_kits(trucks)
-    late_releases = len(schedule_insights.release_hold_items)
-    summary_tiles = [
-        (
-            "Active Trucks",
-            str(len(trucks)),
-            "Visible active trucks on the board.",
-            "ok" if trucks else "caution",
-        ),
-        (
-            "Active Kits",
-            str(active_kits),
-            "Active kits across all displayed trucks.",
-            "ok" if active_kits else "caution",
-        ),
-        (
-            "Engineering Holds",
-            str(late_releases),
-            "Not released past planned start.",
-            "problem" if late_releases > 0 else "ok",
-        ),
-        (
-            "Blocked Kits",
-            str(blocked_kits),
-            "Kits with blocker text.",
-            "problem" if blocked_kits > 0 else "ok",
-        ),
-        (
-            "Laser",
-            dashboard_metrics.laser_buffer.level.upper(),
-            "Released work currently feeding laser.",
-            dashboard_metrics.laser_buffer.level,
-        ),
-        (
-            "Brake",
-            dashboard_metrics.bend_buffer.level.upper(),
-            "3+ released kits in laser/bend is healthy.",
-            dashboard_metrics.bend_buffer.level,
-        ),
-        (
-            "Weld A",
-            dashboard_metrics.weld_feed_a.level.upper(),
-            "Body-line continuity into weld A.",
-            dashboard_metrics.weld_feed_a.level,
-        ),
-        (
-            "Weld B",
-            dashboard_metrics.weld_feed_b.level.upper(),
-            "Console / interior / exterior weld feed.",
-            dashboard_metrics.weld_feed_b.level,
-        ),
+    gantt_link_url = ""
+    if artifact_links:
+        gantt_link_url = str(artifact_links.get("gantt_png_url", "")).strip()
+    signal_tiles = [
+        ("LASER", _signal_state(dashboard_metrics.laser_buffer.level, family="laser")),
+        ("BRAKE", _signal_state(dashboard_metrics.bend_buffer.level, family="brake")),
+        ("WELD A", _signal_state(dashboard_metrics.weld_feed_a.level, family="weld")),
+        ("WELD B", _signal_state(dashboard_metrics.weld_feed_b.level, family="weld")),
     ]
 
-    body: list[dict[str, Any]] = [
+    body: list[dict[str, Any]] = []
+
+    body.append(
         {
-            "type": "TextBlock",
-            "text": "Fabrication Flow Dashboard - Live Board View",
-            "size": "Large",
-            "weight": "Bolder",
-            "wrap": True,
-        },
-        {
-            "type": "TextBlock",
-            "text": f"Generated: {generated_text}",
-            "isSubtle": True,
-            "spacing": "None",
-            "wrap": True,
-        },
-        {
-            "type": "TextBlock",
-            "text": (
-                f"Week of {_current_week_of_label()} | "
-                f"Engineering Holds {late_releases} | "
-                f"Blocked Kits {blocked_kits}"
-            ),
-            "wrap": True,
+            "type": "ColumnSet",
+            "columns": [_signal_light_column(label, state) for label, state in signal_tiles],
             "spacing": "Small",
-        },
-    ]
-
-    for start in range(0, len(summary_tiles), 4):
-        chunk = summary_tiles[start : start + 4]
-        body.append(
-            {
-                "type": "ColumnSet",
-                "columns": [
-                    _tile_column(
-                        label=tile[0],
-                        value=tile[1],
-                        detail=tile[2],
-                        tone=tile[3],
-                    )
-                    for tile in chunk
-                ],
-                "spacing": "Medium",
-            }
-        )
-
-    body.extend(
-        _build_scheduled_vs_actual_gantt_items(
-            trucks=trucks,
-            schedule_insights=schedule_insights,
-            max_rows=max(1, int(max_trucks)),
-        )
+        }
     )
 
     attention_items_block: list[dict[str, Any]] = [
         {
             "type": "TextBlock",
-            "text": "Live Attention Queue",
+            "text": "Attention",
             "weight": "Bolder",
             "spacing": "Medium",
             "wrap": True,
         }
     ]
-    attention_items = dashboard_metrics.attention_items[: max(1, int(max_attention))]
-    for item in attention_items:
-        tone = "problem" if item.priority >= 90 else ("caution" if item.priority >= 70 else "ok")
+    attention_lines = _build_desktop_red_attention_lines(
+        trucks=trucks,
+        dashboard_metrics=dashboard_metrics,
+        schedule_insights=schedule_insights,
+    )
+    for text in attention_lines:
         attention_items_block.append(
             {
                 "type": "TextBlock",
-                "text": f"- {item.title}: {item.detail}",
-                "color": _tone_to_adaptive_color(tone),
+                "text": text,
+                "color": _tone_to_adaptive_color("problem"),
+                "wrap": True,
+                "spacing": "Small",
+            }
+        )
+    if not attention_lines:
+        attention_items_block.append(
+            {
+                "type": "TextBlock",
+                "text": "No red attention items.",
+                "isSubtle": True,
                 "wrap": True,
                 "spacing": "Small",
             }
@@ -536,11 +667,19 @@ def build_dashboard_adaptive_card(
         }
     )
 
-    holds_by_truck = _build_holds_by_truck(schedule_insights)
-    truck_lane_items: list[dict[str, Any]] = [
+    body.extend(
+        _build_scheduled_vs_actual_gantt_items(
+            trucks=trucks,
+            schedule_insights=schedule_insights,
+            max_rows=max(1, int(max_trucks)),
+            gantt_link_url=gantt_link_url,
+        )
+    )
+
+    board_lane_items: list[dict[str, Any]] = [
         {
             "type": "TextBlock",
-            "text": "Truck Board Lanes",
+            "text": "Board Lanes",
             "weight": "Bolder",
             "spacing": "Medium",
             "wrap": True,
@@ -548,88 +687,56 @@ def build_dashboard_adaptive_card(
     ]
 
     visible_trucks = trucks[: max(1, int(max_trucks))]
-    for index, truck in enumerate(visible_trucks, start=1):
-        main_kit = _find_main_body_kit(truck)
-        if main_kit:
-            main_stage = stage_label(main_kit.front_stage_id)
-            main_released = (
-                main_kit.release_state == "released"
-                or stage_from_id(main_kit.front_stage_id) > Stage.RELEASE
+    board_lane_columns = 2
+    for start in range(0, len(visible_trucks), board_lane_columns):
+        chunk = visible_trucks[start : start + board_lane_columns]
+        columns: list[dict[str, Any]] = []
+        for truck in chunk:
+            main_kit = _find_main_body_kit(truck)
+            main_text = _kit_stage_text(main_kit) if main_kit else "N/A"
+            columns.append(
+                {
+                    "type": "Column",
+                    "width": "stretch",
+                    "items": [
+                        {
+                            "type": "TextBlock",
+                            "text": f"{truck.truck_number} | Body: {main_text}",
+                            "weight": "Bolder",
+                            "wrap": True,
+                        },
+                        {
+                            "type": "FactSet",
+                            "facts": [
+                                {
+                                    "title": str(kit.kit_name),
+                                    "value": _kit_stage_text(kit),
+                                }
+                                for kit in truck.kits
+                                if kit.is_active
+                            ],
+                            "spacing": "Small",
+                        },
+                    ],
+                }
             )
-            main_text = f"{main_stage} ({'released' if main_released else 'not released'})"
-        else:
-            main_text = "N/A"
-
-        risk_text, risk_tone = _build_truck_risk_text(
-            truck,
-            hold_count=holds_by_truck.get(truck.truck_number, 0),
-        )
-        details_id = _safe_toggle_id(truck.truck_number, index)
-
-        truck_lane_items.append(
+        while len(columns) < board_lane_columns:
+            columns.append({"type": "Column", "width": "stretch", "items": []})
+        board_lane_items.append(
             {
-                "type": "Container",
-                "separator": True,
+                "type": "ColumnSet",
+                "columns": columns,
                 "spacing": "Small",
-                "items": [
-                    {
-                        "type": "TextBlock",
-                        "text": f"{truck.truck_number} | Body: {main_text}",
-                        "weight": "Bolder",
-                        "wrap": True,
-                    },
-                    {
-                        "type": "TextBlock",
-                        "text": "Stage Load: " + _build_stage_load_text(truck),
-                        "wrap": True,
-                        "spacing": "None",
-                    },
-                    {
-                        "type": "TextBlock",
-                        "text": "Risk: " + risk_text,
-                        "color": _tone_to_adaptive_color(risk_tone),
-                        "wrap": True,
-                        "spacing": "None",
-                    },
-                    {
-                        "type": "ActionSet",
-                        "actions": [
-                            {
-                                "type": "Action.ToggleVisibility",
-                                "title": "Show/Hide Kit Details",
-                                "targetElements": [details_id],
-                            }
-                        ],
-                        "spacing": "Small",
-                    },
-                    {
-                        "type": "Container",
-                        "id": details_id,
-                        "isVisible": False,
-                        "items": [
-                            {
-                                "type": "FactSet",
-                                "facts": [
-                                    {
-                                        "title": str(kit.kit_name),
-                                        "value": _kit_stage_text(kit),
-                                    }
-                                    for kit in truck.kits
-                                    if kit.is_active
-                                ],
-                                "spacing": "Small",
-                            }
-                        ],
-                    },
-                ],
+                "separator": True,
             }
         )
+
     body.append(
         {
             "type": "Container",
             "id": "truck_lanes_section",
             "isVisible": True,
-            "items": truck_lane_items,
+            "items": board_lane_items,
         }
     )
 
@@ -663,268 +770,15 @@ def build_teams_webhook_payload(
     artifact_links: dict[str, str] | None = None,
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
-    generated = generated_at or datetime.now(timezone.utc)
-    generated_text = generated.astimezone().strftime("%Y-%m-%d %H:%M %Z")
-    blocked_kits = _count_blocked_kits(trucks)
-
-    snapshot_metrics: SnapshotMetrics = compute_snapshot_metrics(
+    card = build_dashboard_adaptive_card(
         trucks=trucks,
-        schedule_insights=schedule_insights,
         dashboard_metrics=dashboard_metrics,
+        schedule_insights=schedule_insights,
+        max_trucks=max(1, int(max_trucks)),
+        max_attention=max(1, int(max_attention)),
+        artifact_links=artifact_links,
+        generated_at=generated_at,
     )
-
-    summary_facts = [
-        {"title": "Active Trucks", "value": str(len(trucks))},
-        {"title": "Laser", "value": dashboard_metrics.laser_buffer.level.capitalize()},
-        {"title": "Brake", "value": dashboard_metrics.bend_buffer.level.capitalize()},
-        {"title": "Weld A", "value": dashboard_metrics.weld_feed_a.level.capitalize()},
-        {"title": "Weld B", "value": dashboard_metrics.weld_feed_b.level.capitalize()},
-        {"title": "Kits Behind Schedule", "value": str(snapshot_metrics.sync_summary.behind_kits)},
-        {"title": "Blocked Kits", "value": str(blocked_kits)},
-    ]
-
-    body: list[dict[str, Any]] = [
-        {
-            "type": "TextBlock",
-            "text": "Fabrication Status",
-            "size": "Large",
-            "weight": "Bolder",
-            "wrap": True,
-        },
-        {
-            "type": "TextBlock",
-            "text": f"Published: {generated_text}",
-            "isSubtle": True,
-            "spacing": "None",
-            "wrap": True,
-        },
-        {
-            "type": "TextBlock",
-            "text": "Confirmed published snapshot",
-            "isSubtle": True,
-            "spacing": "None",
-            "wrap": True,
-        },
-        {
-            "type": "TextBlock",
-            "text": "Top Summary",
-            "weight": "Bolder",
-            "spacing": "Medium",
-            "wrap": True,
-        },
-        {
-            "type": "FactSet",
-            "facts": summary_facts,
-            "spacing": "Small",
-        },
-        {
-            "type": "TextBlock",
-            "text": "Risk Summary",
-            "weight": "Bolder",
-            "spacing": "Medium",
-            "wrap": True,
-        },
-    ]
-
-    attention_items = dashboard_metrics.attention_items[: max(1, int(max_attention))]
-    for item in attention_items:
-        tone = "problem" if item.priority >= 90 else ("caution" if item.priority >= 70 else "ok")
-        body.append(
-            {
-                "type": "TextBlock",
-                "text": f"- {item.title}: {item.detail}",
-                "color": _tone_to_adaptive_color(tone),
-                "spacing": "Small",
-                "wrap": True,
-            }
-        )
-    if not attention_items:
-        body.append(
-            {
-                "type": "TextBlock",
-                "text": "- No urgent flow risks.",
-                "isSubtle": True,
-                "spacing": "Small",
-                "wrap": True,
-            }
-        )
-
-    body.append(
-        {
-            "type": "TextBlock",
-            "text": "Per-Truck Summary",
-            "weight": "Bolder",
-            "spacing": "Medium",
-            "wrap": True,
-        }
-    )
-
-    tone_order = {"problem": 0, "caution": 1, "ok": 2}
-    sorted_truck_rows = sorted(
-        snapshot_metrics.truck_rows,
-        key=lambda row: (
-            tone_order.get(str(row.tone or "").lower(), 3),
-            0 if str(row.risk_category or "").strip().lower() != "in sync" else 1,
-            str(row.truck_number or "").lower(),
-        ),
-    )
-    visible_rows = sorted_truck_rows[: max(1, int(max_trucks))]
-    for row in visible_rows:
-        body.append(
-            {
-                "type": "TextBlock",
-                "text": f"- {row.truck_number} - {row.main_stage} - {row.sync_status} - {row.issue_summary}",
-                "color": _tone_to_adaptive_color(row.tone),
-                "spacing": "Small",
-                "wrap": True,
-            }
-        )
-    remaining_rows = max(0, len(sorted_truck_rows) - len(visible_rows))
-    if remaining_rows > 0:
-        body.append(
-            {
-                "type": "TextBlock",
-                "text": f"+{remaining_rows} more truck(s) not shown.",
-                "isSubtle": True,
-                "spacing": "Small",
-                "wrap": True,
-            }
-        )
-
-    links = {
-        "summary_html_url": "",
-        "gantt_png_url": "",
-        "status_json_url": "",
-    }
-    if artifact_links:
-        for key in links:
-            links[key] = str(artifact_links.get(key, "")).strip()
-
-    actions: list[dict[str, Any]] = []
-    action_order = [
-        ("Open Full Dashboard", "summary_html_url"),
-        ("Open Gantt Snapshot", "gantt_png_url"),
-        ("Open Published JSON", "status_json_url"),
-    ]
-    for title, key in action_order:
-        url = links.get(key, "")
-        if not url:
-            continue
-        actions.append(
-            {
-                "type": "Action.OpenUrl",
-                "title": title,
-                "url": url,
-            }
-        )
-
-    if not actions:
-        body.append(
-            {
-                "type": "TextBlock",
-                "text": (
-                    "Artifact links are not configured. "
-                    "Set published URLs in _runtime/published_artifact_links.json."
-                ),
-                "isSubtle": True,
-                "spacing": "Medium",
-                "wrap": True,
-            }
-        )
-
-    card: dict[str, Any] = {
-        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-        "type": "AdaptiveCard",
-        "version": "1.4",
-        "msteams": {"width": "Full"},
-        "body": body,
-    }
-    if actions:
-        card["actions"] = actions
-
-    return {
-        "type": "message",
-        "attachments": [
-            {
-                "contentType": "application/vnd.microsoft.card.adaptive",
-                "contentUrl": None,
-                "content": card,
-            }
-        ],
-    }
-
-
-def build_teams_gantt_only_webhook_payload(
-    *,
-    trucks: list[Truck],
-    schedule_insights: ScheduleInsights,
-    max_trucks: int = 20,
-    mention_name: str = "cevenson",
-    generated_at: datetime | None = None,
-    allow_image: bool = True,
-) -> dict[str, Any]:
-    generated = generated_at or datetime.now(timezone.utc)
-    generated_text = generated.astimezone().strftime("%Y-%m-%d %H:%M %Z")
-
-    mention = str(mention_name or "").strip()
-    mention_token = f"<at>{mention}</at>" if mention else ""
-
-    body: list[dict[str, Any]] = [
-        {
-            "type": "TextBlock",
-            "text": "Master Schedule vs Actual",
-            "size": "Large",
-            "weight": "Bolder",
-            "wrap": True,
-        },
-        {
-            "type": "TextBlock",
-            "text": f"Generated: {generated_text}",
-            "isSubtle": True,
-            "spacing": "None",
-            "wrap": True,
-        },
-    ]
-    if mention_token:
-        body.append(
-            {
-                "type": "TextBlock",
-                "text": mention_token,
-                "wrap": True,
-                "spacing": "Small",
-            }
-        )
-
-    body.extend(
-        _build_scheduled_vs_actual_gantt_items(
-            trucks=trucks,
-            schedule_insights=schedule_insights,
-            max_rows=max(1, int(max_trucks)),
-            allow_image=bool(allow_image),
-        )
-    )
-
-    card: dict[str, Any] = {
-        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-        "type": "AdaptiveCard",
-        "version": "1.4",
-        "msteams": {"width": "Full"},
-        "body": body,
-    }
-    if mention_token:
-        card["msteams"] = {
-            "width": "Full",
-            "entities": [
-                {
-                    "type": "mention",
-                    "text": mention_token,
-                    "mentioned": {
-                        "id": mention,
-                        "name": mention,
-                    },
-                }
-            ],
-        }
 
     return {
         "type": "message",

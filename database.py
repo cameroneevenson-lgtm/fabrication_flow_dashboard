@@ -128,13 +128,14 @@ class FabricationDatabase:
                         back_stage_id,
                         front_position,
                         back_position,
+                        keep_tail_at_head,
                         blocker,
                         pdf_links,
                         is_active,
                         created_at,
                         updated_at
                     )
-                    VALUES (?, ?, NULL, ?, ?, ?, 'not_released', '', 0, '', ?, ?, ?, ?, '', '', 1, ?, ?)
+                    VALUES (?, ?, NULL, ?, ?, ?, 'not_released', '', 0, '', ?, ?, ?, ?, 1, '', '', 1, ?, ?)
                     """,
                     (
                         truck_id,
@@ -263,17 +264,18 @@ class FabricationDatabase:
                             released_at,
                             blocked,
                             blocked_reason,
-                            front_stage_id,
-                            back_stage_id,
-                            front_position,
-                            back_position,
-                            blocker,
-                            pdf_links,
-                            is_active,
-                            created_at,
-                            updated_at
-                        )
-                        VALUES (?, ?, NULL, ?, ?, ?, 'not_released', '', 0, '', ?, ?, ?, ?, '', '', 1, ?, ?)
+                        front_stage_id,
+                        back_stage_id,
+                        front_position,
+                        back_position,
+                        keep_tail_at_head,
+                        blocker,
+                        pdf_links,
+                        is_active,
+                        created_at,
+                        updated_at
+                    )
+                        VALUES (?, ?, NULL, ?, ?, ?, 'not_released', '', 0, '', ?, ?, ?, ?, 1, '', '', 1, ?, ?)
                         """,
                         (
                             truck_id,
@@ -345,6 +347,7 @@ class FabricationDatabase:
                     back_stage_id,
                     front_position,
                     back_position,
+                    keep_tail_at_head,
                     blocker,
                     pdf_links,
                     is_active,
@@ -374,6 +377,7 @@ class FabricationDatabase:
         blocked_reason: str | None = None,
         front_position: int | None = None,
         back_position: int | None = None,
+        keep_tail_at_head: bool | None = None,
     ) -> None:
         normalized_release_state = self._normalize_release_state(release_state)
         normalized_front, normalized_back = normalize_stage_span(
@@ -397,7 +401,8 @@ class FabricationDatabase:
                     truck_id,
                     released_at,
                     front_position,
-                    back_position
+                    back_position,
+                    keep_tail_at_head
                 FROM TruckKit
                 WHERE id = ?
                 """,
@@ -411,12 +416,20 @@ class FabricationDatabase:
                 effective_front_position = kit_row["front_position"]
             if effective_back_position is None:
                 effective_back_position = kit_row["back_position"]
+            normalized_keep_tail_at_head = (
+                bool(kit_row["keep_tail_at_head"])
+                if keep_tail_at_head is None
+                else bool(keep_tail_at_head)
+            )
             normalized_front_position, normalized_back_position = self._normalize_position_span(
                 front_position=effective_front_position,
                 back_position=effective_back_position,
                 front_stage_id=normalized_front,
                 back_stage_id=normalized_back,
             )
+            if normalized_keep_tail_at_head:
+                normalized_back = normalized_front
+                normalized_back_position = normalized_front_position
             current_released_at = str(kit_row["released_at"] or "").strip()
             if normalized_release_state == "released":
                 if released_at is None:
@@ -437,6 +450,7 @@ class FabricationDatabase:
                     back_stage_id = ?,
                     front_position = ?,
                     back_position = ?,
+                    keep_tail_at_head = ?,
                     blocker = ?,
                     pdf_links = COALESCE(?, pdf_links),
                     is_active = ?,
@@ -452,6 +466,7 @@ class FabricationDatabase:
                     normalized_back,
                     normalized_front_position,
                     normalized_back_position,
+                    int(normalized_keep_tail_at_head),
                     normalized_blocked_reason,
                     pdf_links.strip() if isinstance(pdf_links, str) else None,
                     int(is_active),
@@ -513,6 +528,7 @@ class FabricationDatabase:
                     back_stage_id,
                     front_position,
                     back_position,
+                    keep_tail_at_head,
                     blocker,
                     pdf_links,
                     is_active,
@@ -615,6 +631,7 @@ class FabricationDatabase:
                 back_stage_id INTEGER NOT NULL CHECK(back_stage_id IN ({VALID_STAGE_IDS_SQL})),
                 front_position INTEGER NOT NULL DEFAULT 10 CHECK(front_position IN ({OVERLAY_ALLOWED_POSITIONS_SQL})),
                 back_position INTEGER NOT NULL DEFAULT 10 CHECK(back_position IN ({OVERLAY_ALLOWED_POSITIONS_SQL})),
+                keep_tail_at_head INTEGER NOT NULL DEFAULT 1 CHECK(keep_tail_at_head IN (0, 1)),
                 blocker TEXT NOT NULL DEFAULT '',
                 pdf_links TEXT NOT NULL DEFAULT '',
                 is_active INTEGER NOT NULL DEFAULT 1,
@@ -664,6 +681,7 @@ class FabricationDatabase:
                 back_stage_id INTEGER NOT NULL CHECK(back_stage_id IN ({VALID_STAGE_IDS_SQL})),
                 front_position INTEGER NOT NULL DEFAULT 10 CHECK(front_position IN ({OVERLAY_ALLOWED_POSITIONS_SQL})),
                 back_position INTEGER NOT NULL DEFAULT 10 CHECK(back_position IN ({OVERLAY_ALLOWED_POSITIONS_SQL})),
+                keep_tail_at_head INTEGER NOT NULL DEFAULT 1 CHECK(keep_tail_at_head IN (0, 1)),
                 blocker TEXT NOT NULL DEFAULT '',
                 pdf_links TEXT NOT NULL DEFAULT '',
                 is_active INTEGER NOT NULL DEFAULT 1,
@@ -680,7 +698,7 @@ class FabricationDatabase:
             INSERT INTO TruckKit_new (
                 id, truck_id, kit_template_id, parent_kit_id, kit_name, kit_order, is_main_kit,
                 release_state, released_at, blocked, blocked_reason, front_stage_id, back_stage_id,
-                front_position, back_position, blocker, pdf_links, is_active, created_at, updated_at
+                front_position, back_position, keep_tail_at_head, blocker, pdf_links, is_active, created_at, updated_at
             )
             SELECT
                 id,
@@ -701,6 +719,10 @@ class FabricationDatabase:
                     ELSE mapped_front
                 END AS front_position,
                 mapped_back AS back_position,
+                CASE
+                    WHEN front_stage_id = back_stage_id AND mapped_front = mapped_back THEN 1
+                    ELSE 0
+                END AS keep_tail_at_head,
                 blocker,
                 pdf_links,
                 is_active,
@@ -756,6 +778,7 @@ class FabricationDatabase:
             str(row["name"]).strip().lower()
             for row in connection.execute("PRAGMA table_info(TruckKit)").fetchall()
         }
+        added_keep_tail_column = False
 
         if "released_at" not in existing_columns:
             connection.execute("ALTER TABLE TruckKit ADD COLUMN released_at TEXT NOT NULL DEFAULT ''")
@@ -767,6 +790,9 @@ class FabricationDatabase:
             connection.execute("ALTER TABLE TruckKit ADD COLUMN front_position INTEGER NOT NULL DEFAULT 10")
         if "back_position" not in existing_columns:
             connection.execute("ALTER TABLE TruckKit ADD COLUMN back_position INTEGER NOT NULL DEFAULT 10")
+        if "keep_tail_at_head" not in existing_columns:
+            connection.execute("ALTER TABLE TruckKit ADD COLUMN keep_tail_at_head INTEGER NOT NULL DEFAULT 1")
+            added_keep_tail_column = True
         if not FabricationDatabase._truckkit_position_scale_is_current(connection):
             FabricationDatabase._rebuild_truckkit_for_position_scale(connection)
 
@@ -848,6 +874,25 @@ class FabricationDatabase:
             SET released_at = CASE
                 WHEN release_state = 'released' THEN TRIM(COALESCE(released_at, ''))
                 ELSE ''
+            END
+            """
+        )
+        if added_keep_tail_column:
+            connection.execute(
+                """
+                UPDATE TruckKit
+                SET keep_tail_at_head = CASE
+                    WHEN front_stage_id = back_stage_id AND front_position = back_position THEN 1
+                    ELSE 0
+                END
+                """
+            )
+        connection.execute(
+            """
+            UPDATE TruckKit
+            SET keep_tail_at_head = CASE
+                WHEN keep_tail_at_head NOT IN (0, 1) THEN 1
+                ELSE keep_tail_at_head
             END
             """
         )
@@ -941,14 +986,7 @@ class FabricationDatabase:
 
     @staticmethod
     def _default_front_position_for_stage(stage_id: int | Stage | None) -> int:
-        stage = stage_from_id(stage_id)
-        if stage >= Stage.WELD:
-            return 34
-        if stage == Stage.BEND:
-            return 24
-        if stage == Stage.LASER:
-            return 14
-        return 10
+        return FabricationDatabase._entry_position_for_stage(stage_id)
 
     @staticmethod
     def _default_back_position_for_stage(stage_id: int | Stage | None) -> int:
@@ -958,6 +996,10 @@ class FabricationDatabase:
         if stage == Stage.BEND:
             return 20
         return 10
+
+    @classmethod
+    def _entry_position_for_stage(cls, stage_id: int | Stage | None) -> int:
+        return cls._default_back_position_for_stage(stage_id)
 
     @classmethod
     def _normalize_position_span(
@@ -1030,6 +1072,11 @@ class FabricationDatabase:
             front_stage_id=front_stage_id,
             back_stage_id=back_stage_id,
         )
+        keep_tail_at_head = (
+            bool(row["keep_tail_at_head"])
+            if "keep_tail_at_head" in row_columns
+            else (front_stage_id == back_stage_id and front_position == back_position)
+        )
         released_at = cls._normalize_iso_date(row["released_at"] if "released_at" in row_columns else "")
         if release_state != "released":
             released_at = ""
@@ -1050,6 +1097,7 @@ class FabricationDatabase:
             back_stage_id=back_stage_id,
             front_position=front_position,
             back_position=back_position,
+            keep_tail_at_head=keep_tail_at_head,
             blocker=blocked_reason if blocked else "",
             pdf_links=row["pdf_links"] or "",
             is_active=bool(row["is_active"]),
