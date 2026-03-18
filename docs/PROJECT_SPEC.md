@@ -30,8 +30,8 @@ Out of scope:
 - `database.py`: SQLite schema lifecycle and CRUD operations.
 - `schedule.py`: schedule insights generation from config + live truck state.
 - `metrics.py`: health/risk metrics and attention signal computation.
-- `teams_card.py`: Teams Adaptive Card payload builders and shared gantt rendering helpers.
-- `publish_artifacts.py`: published artifact generation (`summary.html`, `gantt.png`, `status.json`) and link resolution.
+- `teams_card.py`: Teams Adaptive Card payload builders plus compact/published gantt rendering helpers used by Teams publishing.
+- `publish_artifacts.py`: published artifact generation (`summary.html`, `gantt.png`, `status.json`), link resolution, and SharePoint-synced gantt output.
 - `truck_registry.py`: CSV parsing and sync orchestration.
 
 ## 3.2 Data Sources
@@ -65,6 +65,10 @@ Canonical stage sequence:
 3. Load active/visible trucks and kit state.
 4. Build schedule insights + metrics.
 5. Render board, top traffic signals, attention panel, and gantt.
+
+Desktop publish controls:
+- `Publish to Teams`: generate/update published artifacts, build the Adaptive Card payload, and POST to the configured webhook.
+- `Update Published Gantt`: generate/update the published artifacts only, without posting a Teams card.
 
 ## 5.2 Kit Movement
 - Drag/drop updates front stage.
@@ -144,27 +148,29 @@ A kit row is rendered only when all are true:
 - Dashboard card is intentionally compact and avoids large embedded detail blocks.
 
 ## 7.2 Compact Dashboard Card Shape
-The dashboard webhook payload is a summary shell:
-- Header:
-  - `Fabrication Status`
-  - published timestamp
-  - `Confirmed published snapshot`
-- Top summary facts:
-  - Active Trucks
-  - Laser
-  - Brake
-  - Weld A
-  - Weld B
-  - Kits Behind Schedule
-  - Blocked Kits
-- Risk summary:
-  - top-priority attention items only
-- Per-truck summary:
-  - compact rows (`truck`, `main stage`, `sync`, short issue)
-  - capped row count to stay small
-- Actions:
-  - `Action.OpenUrl` only
-  - links for full dashboard, gantt snapshot, published JSON
+The dashboard webhook payload is a compact live board summary:
+- Top signal row:
+  - traffic-light style indicators only
+  - `LASER`
+  - `BRAKE`
+  - `WELD A`
+  - `WELD B`
+- Attention section:
+  - red attention items only
+  - wording should match the desktop attention panel for those rows
+  - if empty, show `No red attention items.`
+- Embedded gantt section:
+  - compact image embedded in-card when it fits payload constraints
+  - cue text above image: `Click to open full-size schedule`
+  - image click opens the published gantt link
+  - published/card gantt looks back toward unfinished work but only shows a short future horizon
+- Board lanes section:
+  - always visible
+  - 2-column layout for better mobile wrapping
+  - each truck column shows `truck | Body: <stage>` plus per-kit fact rows
+- Footer behavior:
+  - no bottom action buttons
+  - no separate `Open Full Dashboard`, `Open Gantt Snapshot`, or `Open Published JSON` actions
 
 ## 7.3 Publish Order
 Dashboard publish follows this sequence:
@@ -173,10 +179,13 @@ Dashboard publish follows this sequence:
 3. Build compact Adaptive Card payload.
 4. POST payload to the Teams Incoming Webhook.
 
+Quiet gantt refresh follows the same artifact-generation path, but stops before card payload build/post.
+
 ## 7.4 Degradation Strategy
 For compact dashboard publish:
 - Reduce per-truck row count progressively until payload fits.
-- Gantt artifact generation attempts a compact PNG render and skips `gantt.png` if image generation cannot fit constraints.
+- Embedded gantt attempts a compact PNG render and falls back to the published gantt link when inline image generation cannot fit constraints.
+- Published/high-resolution gantt uses a shorter forward horizon than the desktop gantt and drops rows that do not intersect the visible viewport.
 
 ## 7.5 Output Artifacts
 Generated payloads are written to:

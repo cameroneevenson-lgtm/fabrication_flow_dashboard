@@ -11,6 +11,7 @@ from gantt_overlay import (
     OverlayRow,
     build_overlay_rows,
     compute_overlay_viewport,
+    normalize_overlay_row_labels,
     render_overlay_png,
 )
 from metrics import DashboardMetrics
@@ -19,6 +20,8 @@ from schedule import ScheduleInsights
 from stages import Stage, stage_from_id, stage_label
 
 TEAMS_GANTT_MAX_PNG_BYTES = 18_000
+# Teams/sharepoint gantt favors "what still needs attention" over long-range lookahead.
+PUBLISHED_GANTT_FORWARD_HORIZON_WEEKS = 2.0
 
 
 def _tone_to_adaptive_color(tone: str) -> str:
@@ -209,11 +212,68 @@ def _build_card_gantt_render_context(
     min_week, max_week = compute_overlay_viewport(
         rows=rows,
         current_week=current_week,
-        forward_horizon_weeks=4.0,
+        forward_horizon_weeks=PUBLISHED_GANTT_FORWARD_HORIZON_WEEKS,
         side_padding_weeks=0.35,
         extend_to_latest_due_week=False,
     )
-    return (rows, current_week, min_week, max_week)
+    # Drop rows whose bars/markers never intersect the published viewport so the image stays focused and compact.
+    visible_rows = [
+        row for row in rows
+        if _row_intersects_viewport(
+            row=row,
+            current_week=current_week,
+            min_week=min_week,
+            max_week=max_week,
+        )
+    ]
+    if not visible_rows:
+        return None
+    return (
+        normalize_overlay_row_labels(visible_rows),
+        current_week,
+        min_week,
+        max_week,
+    )
+
+
+def _interval_intersects_viewport(
+    *,
+    start_week: float,
+    end_week: float,
+    min_week: float,
+    max_week: float,
+) -> bool:
+    left = min(float(start_week), float(end_week))
+    right = max(float(start_week), float(end_week))
+    return not (right < float(min_week) or left > float(max_week))
+
+
+def _row_intersects_viewport(
+    *,
+    row: OverlayRow,
+    current_week: float,
+    min_week: float,
+    max_week: float,
+) -> bool:
+    intervals: list[tuple[float, float]] = list(row.windows.values())
+    intervals.append((float(row.back_week), float(row.front_week)))
+
+    if row.is_behind and row.released and not row.blocked:
+        # Behind arrows count as visible content too, so keep rows whose catch-up arrow enters the viewport.
+        target_week_value = float(current_week)
+        if row.status_key not in {"red", "yellow"} and float(row.front_week) >= float(current_week):
+            target_week_value = float(row.expected_week) if row.expected_week is not None else float(current_week)
+        intervals.append((float(row.front_week), float(target_week_value)))
+
+    return any(
+        _interval_intersects_viewport(
+            start_week=float(start_week),
+            end_week=float(end_week),
+            min_week=float(min_week),
+            max_week=float(max_week),
+        )
+        for start_week, end_week in intervals
+    )
 
 
 def render_compact_gantt_png_bytes(

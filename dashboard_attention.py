@@ -46,6 +46,7 @@ def build_dashboard_attention_lines(
     include_late_fabrication: bool = True,
     include_empty_message: bool = False,
 ) -> list[DashboardAttentionLine]:
+    # This merges dashboard attention, late releases, and behind-schedule rows into one de-duplicated display list.
     hold_items = list(schedule_insights.release_hold_items) if include_late_release else []
     behind_rows = []
     if include_late_fabrication:
@@ -108,6 +109,7 @@ def build_dashboard_attention_lines(
         if len(parts) != 2:
             continue
         key = (parts[0].lower(), parts[1].lower())
+        # Avoid listing the same kit twice when a late release row already explains why it is behind.
         if key in late_release_keys:
             continue
         late_fabrication_rows.append((parts[0], parts[1]))

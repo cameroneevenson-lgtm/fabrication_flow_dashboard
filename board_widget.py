@@ -64,6 +64,7 @@ def _kit_window_signature(
     kit_name: str,
     kit_stage_windows_by_truck: dict[tuple[int, str, int], tuple[float, float]],
 ) -> tuple[tuple[int, float, float], ...]:
+    # Only include values that change the rendered schedule lane placement for this kit.
     normalized_name = _normalize_kit_name(kit_name)
     windows: list[tuple[int, float, float]] = []
     for stage in STAGE_SEQUENCE:
@@ -81,6 +82,7 @@ def _kit_render_signature(
     hold_weeks_by_id: dict[int, float],
     kit_stage_windows_by_truck: dict[tuple[int, str, int], tuple[float, float]],
 ) -> tuple[object, ...]:
+    # The board row diff uses this signature to avoid recreating unchanged card widgets.
     hold_weeks = None
     if kit.id is not None:
         raw_hold_weeks = hold_weeks_by_id.get(int(kit.id))
@@ -116,6 +118,7 @@ def _truck_render_signature(
     current_week: float | None,
     kit_stage_windows_by_truck: dict[tuple[int, str, int], tuple[float, float]],
 ) -> tuple[object, ...]:
+    # Include truck-level display fields plus the ordered active-kit signatures for row-level diffing.
     truck_id = int(truck.id or -1)
     active_kits = [kit for kit in sorted(truck.kits, key=lambda value: value.kit_order) if kit.is_active]
     return (
@@ -949,6 +952,7 @@ class BoardWidget(QWidget):
             for index, truck in enumerate(trucks):
                 if self._row_signatures[index] == desired_signatures[index]:
                     continue
+                # Replace only the rows whose rendered content changed; keep the rest of the board intact.
                 row_widget = self._create_row_widget(
                     truck=truck,
                     accent_color=ACCENT_COLORS[index % len(ACCENT_COLORS)],

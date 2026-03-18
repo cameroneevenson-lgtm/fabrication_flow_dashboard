@@ -99,6 +99,7 @@ def build_sized_dashboard_publish_payload(
     max_attention: int = 3,
     candidate_rows: tuple[int, ...] = (8, 6, 5, 4, 3),
 ) -> tuple[dict[str, object], int, int]:
+    # Walk down the allowed truck counts until the Adaptive Card fits Teams' payload cap.
     best_payload: dict[str, object] | None = None
     best_size: int | None = None
     best_rows = 0

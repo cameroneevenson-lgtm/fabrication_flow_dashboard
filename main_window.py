@@ -1034,6 +1034,7 @@ class MainWindow(QMainWindow):
         right_column_layout = QVBoxLayout(right_column)
         right_column_layout.setContentsMargins(0, 0, 0, 0)
         right_column_layout.setSpacing(10)
+        right_column_layout.addWidget(self._build_schedule_panel())
         right_column_layout.addWidget(self._build_attention_panel(), 1)
 
         board_gantt_splitter = QSplitter(Qt.Vertical)
@@ -1297,6 +1298,7 @@ class MainWindow(QMainWindow):
         return mapping
 
     def _build_dashboard_view_state(self, trucks: list[Truck]) -> DashboardViewState:
+        # Build one coherent snapshot so board, metrics, schedule text, and gantt all render from the same state.
         ordered_trucks = sort_trucks_natural(list(trucks))
         schedule_insights = build_schedule_insights(ordered_trucks)
         dashboard_metrics = compute_dashboard_metrics(
@@ -1318,6 +1320,7 @@ class MainWindow(QMainWindow):
 
     @contextmanager
     def _batch_dashboard_ui_updates(self):
+        # Suppress intermediate repaints while multiple dashboard surfaces are updated together.
         widgets: list[QWidget] = []
         for candidate in (
             self,
@@ -1369,6 +1372,7 @@ class MainWindow(QMainWindow):
             self.refresh_view()
             return
 
+        # Reload only the edited truck from SQLite, then rebuild the derived view state from the in-memory list.
         updated_truck = self.database.load_truck_with_kits(int(truck_id), active_only=True)
         refreshed_trucks = [
             truck for truck in self._trucks
@@ -2050,6 +2054,7 @@ class MainWindow(QMainWindow):
         is_per_truck: bool,
         dark_mode: bool,
     ) -> tuple[object, ...]:
+        # Skip expensive gantt rerenders when the visible rows, viewport, and theme have not changed.
         row_signature: list[tuple[object, ...]] = []
         for row in rows:
             windows_signature = tuple(
