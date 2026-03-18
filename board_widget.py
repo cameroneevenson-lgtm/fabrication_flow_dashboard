@@ -143,11 +143,12 @@ class KitCard(QFrame):
         self._press_pos: QPoint | None = None
         self._drag_started = False
         self._dark_mode = bool(dark_mode)
-        self._click_count = 0
-        self._last_click_ts = 0.0
+        self._ignore_release_click = False
+        self._single_click_delay_ms = max(int(QApplication.doubleClickInterval()) + 150, 450)
+        self._last_release_ts = 0.0
         self._single_click_timer = QTimer(self)
         self._single_click_timer.setSingleShot(True)
-        self._single_click_timer.setInterval(QApplication.doubleClickInterval())
+        self._single_click_timer.setInterval(self._single_click_delay_ms)
         self._single_click_timer.timeout.connect(self._flush_pending_clicks)
         self.setCursor(Qt.OpenHandCursor)
         self.setAcceptDrops(True)
@@ -196,6 +197,7 @@ class KitCard(QFrame):
         title_label = QLabel(title)
         title_label.setWordWrap(True)
         title_label.setStyleSheet(f"font-weight: 700; color: {title_color};")
+        title_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
         layout.addWidget(title_label)
 
@@ -206,14 +208,26 @@ class KitCard(QFrame):
                 blocker_label.setStyleSheet("font-size: 10px; color: #FFB099;")
             else:
                 blocker_label.setStyleSheet("font-size: 10px; color: #A53E2C;")
+            blocker_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             layout.addWidget(blocker_label)
 
     def mousePressEvent(self, event):  # type: ignore[override]
         if event.button() == Qt.LeftButton and self._kit.id is not None:
             self._press_pos = event.position().toPoint()
             self._drag_started = False
-            self.setCursor(Qt.ClosedHandCursor)
         super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):  # type: ignore[override]
+        if event.button() == Qt.LeftButton and self._kit.id is not None:
+            self._single_click_timer.stop()
+            self._ignore_release_click = True
+            self._press_pos = None
+            self._drag_started = False
+            self.setCursor(Qt.OpenHandCursor)
+            self._open_pdf_link()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def mouseMoveEvent(self, event):  # type: ignore[override]
         if self._press_pos is None or self._kit.id is None:
@@ -228,47 +242,47 @@ class KitCard(QFrame):
             super().mouseMoveEvent(event)
             return
 
+        self._single_click_timer.stop()
         self._drag_started = True
+        self.setCursor(Qt.ClosedHandCursor)
         drag = QDrag(self)
         mime = QMimeData()
         mime.setText(_encode_drag_payload(self._kit))
         drag.setMimeData(mime)
         drag.exec(Qt.MoveAction)
+        self.setCursor(Qt.OpenHandCursor)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):  # type: ignore[override]
         if event.button() == Qt.LeftButton:
-            if not self._drag_started and self._kit.id is not None:
-                self._register_click()
+            if self._ignore_release_click:
+                self._ignore_release_click = False
+            elif not self._drag_started and self._kit.id is not None:
+                now = time.monotonic()
+                double_click_window = float(self._single_click_delay_ms) / 1000.0
+                if self._single_click_timer.isActive() and (now - self._last_release_ts) <= double_click_window:
+                    self._single_click_timer.stop()
+                    self._last_release_ts = 0.0
+                    self._open_pdf_link()
+                else:
+                    self._last_release_ts = now
+                    self._queue_single_click()
             self._press_pos = None
             self._drag_started = False
             self.setCursor(Qt.OpenHandCursor)
         super().mouseReleaseEvent(event)
 
-    def _register_click(self) -> None:
-        now = time.monotonic()
-        double_click_window = float(QApplication.doubleClickInterval()) / 1000.0
-        if (now - self._last_click_ts) > double_click_window:
-            self._click_count = 0
-        self._last_click_ts = now
-        self._click_count += 1
-
-        if self._click_count >= 2:
-            self._single_click_timer.stop()
-            self._click_count = 0
-            self._open_pdf_link()
-            return
-
+    def _queue_single_click(self) -> None:
+        self._single_click_timer.stop()
         self._single_click_timer.start()
 
     def _flush_pending_clicks(self) -> None:
-        click_count = self._click_count
-        self._click_count = 0
-        if click_count > 0 and self._kit.id is not None:
+        self._last_release_ts = 0.0
+        if self._kit.id is not None:
             self.clicked.emit(int(self._kit.id))
 
     def _open_pdf_link(self) -> None:
-        link = _first_pdf_link(self._kit.pdf_links)
+        link = first_pdf_link(self._kit.pdf_links)
         if not link or not hasattr(os, "startfile"):
             return
         try:
