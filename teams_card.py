@@ -5,6 +5,8 @@ from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from typing import Any
 
+from dashboard_attention import build_dashboard_attention_lines
+from dashboard_helpers import signal_state_for_level
 from gantt_overlay import (
     OverlayRow,
     build_overlay_rows,
@@ -14,7 +16,7 @@ from gantt_overlay import (
 from metrics import DashboardMetrics
 from models import Truck, TruckKit
 from schedule import ScheduleInsights
-from stages import STAGE_SEQUENCE, Stage, stage_from_id, stage_label
+from stages import Stage, stage_from_id, stage_label
 
 TEAMS_GANTT_MAX_PNG_BYTES = 18_000
 
@@ -63,62 +65,6 @@ def _tile_column(label: str, value: str, detail: str, tone: str) -> dict[str, An
         "width": "stretch",
         "items": items,
     }
-
-
-def _signal_emoji(level: str, *, family: str) -> str:
-    normalized = str(level or "").strip().lower()
-    if family in {"laser", "brake"}:
-        if normalized == "healthy":
-            return "🟢"
-        if normalized == "low":
-            return "🟡"
-        return "🔴"
-    if normalized == "healthy":
-        return "🟢"
-    if normalized == "watch":
-        return "🟡"
-    return "🔴"
-
-
-def _signal_column(label: str, emoji: str) -> dict[str, Any]:
-    return {
-        "type": "Column",
-        "width": "stretch",
-        "items": [
-            {
-                "type": "TextBlock",
-                "text": label,
-                "size": "Small",
-                "isSubtle": True,
-                "wrap": True,
-                "horizontalAlignment": "Center",
-            },
-            {
-                "type": "TextBlock",
-                "text": emoji,
-                "size": "ExtraLarge",
-                "wrap": True,
-                "horizontalAlignment": "Center",
-            },
-        ],
-    }
-
-
-def _signal_state(level: str, *, family: str) -> str:
-    normalized = str(level or "").strip().lower()
-    if family in {"laser", "brake"}:
-        if normalized == "healthy":
-            return "green"
-        if normalized == "low":
-            return "yellow"
-        return "red"
-    if normalized == "healthy":
-        return "green"
-    if normalized == "watch":
-        return "yellow"
-    return "red"
-
-
 def _signal_light_column(label: str, state: str) -> dict[str, Any]:
     color_by_light = {
         "red": "Attention",
@@ -168,45 +114,6 @@ def _find_main_body_kit(truck: Truck) -> TruckKit | None:
         if kit.is_main_kit or str(kit.kit_name).strip().lower() == "body":
             return kit
     return None
-
-
-def _count_active_kits(trucks: list[Truck]) -> int:
-    return sum(1 for truck in trucks for kit in truck.kits if kit.is_active)
-
-
-def _count_blocked_kits(trucks: list[Truck]) -> int:
-    return sum(1 for truck in trucks for kit in truck.kits if kit.is_active and str(kit.blocker).strip())
-
-
-def _build_holds_by_truck(schedule_insights: ScheduleInsights) -> dict[str, int]:
-    by_truck: dict[str, int] = {}
-    for item in schedule_insights.release_hold_items:
-        key = str(item.truck_number or "").strip()
-        if not key:
-            continue
-        by_truck[key] = by_truck.get(key, 0) + 1
-    return by_truck
-
-
-def _build_stage_load_text(truck: Truck) -> str:
-    counts = {stage: 0 for stage in STAGE_SEQUENCE}
-    for kit in truck.kits:
-        if not kit.is_active:
-            continue
-        counts[stage_from_id(kit.front_stage_id)] += 1
-    parts = [f"{stage_label(stage)} {counts[stage]}" for stage in STAGE_SEQUENCE]
-    return " | ".join(parts)
-
-
-def _build_truck_risk_text(truck: Truck, hold_count: int) -> tuple[str, str]:
-    blocked_count = sum(1 for kit in truck.kits if kit.is_active and str(kit.blocker).strip())
-    if hold_count > 0:
-        return (f"Late Release: {hold_count} kit(s) late release.", "problem")
-    if blocked_count > 0:
-        return (f"Blocked: {blocked_count} kit(s) blocked.", "problem")
-    return ("No immediate issue.", "ok")
-
-
 def _kit_stage_text(kit: TruckKit) -> str:
     front_stage = stage_from_id(kit.front_stage_id)
     if front_stage == Stage.RELEASE:
@@ -228,56 +135,6 @@ def _week_value_to_date_label(week_value: float, current_week: float) -> str:
     delta_days = (float(week_value) - float(current_week)) * 7.0
     target_date = current_monday + timedelta(days=delta_days)
     return target_date.strftime("%b %d, %Y")
-
-
-def _format_late_weeks(value: float) -> str:
-    rounded_weeks = max(0, int(float(value) + 0.5))
-    unit = "week" if rounded_weeks == 1 else "weeks"
-    return f"{rounded_weeks} {unit} late"
-
-
-def _build_desktop_red_attention_lines(
-    *,
-    trucks: list[Truck],
-    dashboard_metrics: DashboardMetrics,
-    schedule_insights: ScheduleInsights,
-) -> list[str]:
-    hold_items = list(schedule_insights.release_hold_items)
-    duplicated_signal_titles = {
-        "Next Body not released",
-        "Weld feed low",
-        "Bend buffer dry",
-        "Bend buffer low",
-        "No urgent flow risks",
-    }
-
-    lines: list[str] = []
-    shown_count = 0
-    seen_texts: set[str] = set()
-    for item in dashboard_metrics.attention_items:
-        if hold_items and item.title == "Engineering release is holding work start":
-            continue
-        if item.title in duplicated_signal_titles:
-            continue
-        if int(item.priority) < 90:
-            continue
-
-        shown_count += 1
-        text = f"{shown_count}. {item.title}: {item.detail}"
-        if text in seen_texts:
-            continue
-        seen_texts.add(text)
-        lines.append(text)
-
-    next_index = shown_count + 1
-    for row_offset, hold in enumerate(hold_items):
-        rank = next_index + row_offset
-        lines.append(
-            f"{rank}. Late Release: {hold.truck_number} {hold.kit_name} "
-            f"({_format_late_weeks(hold.hold_weeks)})"
-        )
-
-    return lines
 
 
 def _week_to_index(week_value: float, min_week: float, max_week: float, width: int) -> int:
@@ -332,12 +189,14 @@ def _compress_png_bytes(raw: bytes, *, max_bytes: int) -> bytes:
         return best
 
     return best
-def render_compact_gantt_png_bytes(
+
+
+def _build_card_gantt_render_context(
     *,
     trucks: list[Truck],
     schedule_insights: ScheduleInsights,
-    max_rows: int = 12,
-) -> bytes | None:
+    max_rows: int,
+) -> tuple[list[OverlayRow], float, float, float] | None:
     rows = build_overlay_rows(
         trucks=trucks,
         schedule_insights=schedule_insights,
@@ -354,6 +213,24 @@ def render_compact_gantt_png_bytes(
         side_padding_weeks=0.35,
         extend_to_latest_due_week=False,
     )
+    return (rows, current_week, min_week, max_week)
+
+
+def render_compact_gantt_png_bytes(
+    *,
+    trucks: list[Truck],
+    schedule_insights: ScheduleInsights,
+    max_rows: int = 12,
+) -> bytes | None:
+    render_context = _build_card_gantt_render_context(
+        trucks=trucks,
+        schedule_insights=schedule_insights,
+        max_rows=max_rows,
+    )
+    if render_context is None:
+        return None
+
+    rows, current_week, min_week, max_week = render_context
 
     raw = render_overlay_png(
         rows=rows,
@@ -384,22 +261,15 @@ def render_published_gantt_png_bytes(
     schedule_insights: ScheduleInsights,
     max_rows: int = 120,
 ) -> bytes | None:
-    rows = build_overlay_rows(
+    render_context = _build_card_gantt_render_context(
         trucks=trucks,
         schedule_insights=schedule_insights,
-        max_rows=max(1, int(max_rows)),
+        max_rows=max_rows,
     )
-    if not rows:
+    if render_context is None:
         return None
 
-    current_week = float(schedule_insights.current_week)
-    min_week, max_week = compute_overlay_viewport(
-        rows=rows,
-        current_week=current_week,
-        forward_horizon_weeks=4.0,
-        side_padding_weeks=0.35,
-        extend_to_latest_due_week=False,
-    )
+    rows, current_week, min_week, max_week = render_context
 
     return render_overlay_png(
         rows=rows,
@@ -428,12 +298,12 @@ def _build_scheduled_vs_actual_gantt_items(
     allow_image: bool = True,
     gantt_link_url: str = "",
 ) -> list[dict[str, Any]]:
-    rows = build_overlay_rows(
+    render_context = _build_card_gantt_render_context(
         trucks=trucks,
         schedule_insights=schedule_insights,
         max_rows=max_rows,
     )
-    if not rows:
+    if render_context is None:
         return [
             {
                 "type": "TextBlock",
@@ -444,14 +314,7 @@ def _build_scheduled_vs_actual_gantt_items(
             }
         ]
 
-    current_week = float(schedule_insights.current_week)
-    min_week, max_week = compute_overlay_viewport(
-        rows=rows,
-        current_week=current_week,
-        forward_horizon_weeks=4.0,
-        side_padding_weeks=0.35,
-        extend_to_latest_due_week=False,
-    )
+    rows, current_week, min_week, max_week = render_context
 
     image_url: str | None = None
     if allow_image:
@@ -608,10 +471,10 @@ def build_dashboard_adaptive_card(
     if artifact_links:
         gantt_link_url = str(artifact_links.get("gantt_png_url", "")).strip()
     signal_tiles = [
-        ("LASER", _signal_state(dashboard_metrics.laser_buffer.level, family="laser")),
-        ("BRAKE", _signal_state(dashboard_metrics.bend_buffer.level, family="brake")),
-        ("WELD A", _signal_state(dashboard_metrics.weld_feed_a.level, family="weld")),
-        ("WELD B", _signal_state(dashboard_metrics.weld_feed_b.level, family="weld")),
+        ("LASER", signal_state_for_level(dashboard_metrics.laser_buffer.level, family="laser")),
+        ("BRAKE", signal_state_for_level(dashboard_metrics.bend_buffer.level, family="brake")),
+        ("WELD A", signal_state_for_level(dashboard_metrics.weld_feed_a.level, family="weld")),
+        ("WELD B", signal_state_for_level(dashboard_metrics.weld_feed_b.level, family="weld")),
     ]
 
     body: list[dict[str, Any]] = []
@@ -633,17 +496,19 @@ def build_dashboard_adaptive_card(
             "wrap": True,
         }
     ]
-    attention_lines = _build_desktop_red_attention_lines(
+    attention_lines = build_dashboard_attention_lines(
         trucks=trucks,
         dashboard_metrics=dashboard_metrics,
         schedule_insights=schedule_insights,
+        min_priority=90,
+        include_late_fabrication=False,
     )
-    for text in attention_lines:
+    for item in attention_lines:
         attention_items_block.append(
             {
                 "type": "TextBlock",
-                "text": text,
-                "color": _tone_to_adaptive_color("problem"),
+                "text": item.text,
+                "color": _tone_to_adaptive_color(item.tone),
                 "wrap": True,
                 "spacing": "Small",
             }

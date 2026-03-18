@@ -5,7 +5,8 @@ import re
 import sqlite3
 import json
 import urllib.error
-import urllib.request
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 import time
@@ -43,6 +44,16 @@ from PySide6.QtWidgets import (
 )
 
 from board_widget import BoardWidget
+from dashboard_attention import build_dashboard_attention_lines
+from dashboard_helpers import is_truck_complete, signal_state_for_level, sort_trucks_natural
+from dashboard_publish import (
+    DEFAULT_TEAMS_WEBHOOK_URL,
+    build_dashboard_publish_snapshot,
+    build_sized_dashboard_publish_payload,
+    load_active_dashboard_trucks,
+    post_json_webhook,
+    write_dashboard_payload,
+)
 from database import FabricationDatabase
 from gantt_overlay import (
     OverlayRow,
@@ -53,13 +64,9 @@ from gantt_overlay import (
 )
 from metrics import (
     DashboardMetrics,
-    SnapshotMetrics,
-    compute_snapshot_metrics,
     compute_dashboard_metrics,
-    sort_trucks_natural,
 )
 from models import RELEASE_STATES, Truck, TruckKit, first_pdf_link
-from publish_artifacts import ArtifactPublishResult, publish_compact_artifacts
 from schedule import ScheduleInsights, build_schedule_insights
 from stages import (
     FABRICATION_STAGE_POSITION_SCALE,
@@ -69,13 +76,6 @@ from stages import (
     stage_from_id,
     stage_label,
     stage_options,
-)
-from teams_card import build_teams_webhook_payload
-
-DEFAULT_TEAMS_WEBHOOK_URL = (
-    "https://default97009fec357647f39ce0fc3d1496b7.b8.environment.api.powerplatform.com:443/"
-    "powerautomate/automations/direct/workflows/98b3a4e7ea8c439090e2d40232163817/triggers/manual/"
-    "paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=ggEqWDyQT6T3GEouJCsp0jiZPF8mgQI5j5bl4T8T4CQ"
 )
 TEAMS_ADAPTIVE_CARD_MAX_PAYLOAD_BYTES = 28_000
 SIGNAL_TILE_HEIGHT = 136
@@ -92,14 +92,24 @@ def _current_week_of_label() -> str:
     return monday.strftime("%b %d, %Y")
 
 
+@dataclass(frozen=True)
+class DashboardViewState:
+    trucks: list[Truck]
+    kit_index: dict[int, tuple[Truck, TruckKit]]
+    schedule_insights: ScheduleInsights
+    dashboard_metrics: DashboardMetrics
+    kit_stage_windows_by_truck: dict[tuple[int, str, int], tuple[float, float]]
+
+
 class WrappingListWidget(QListWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setWordWrap(True)
         self.setUniformItemSizes(False)
+        self._rendered_entries: list[tuple[str, str]] = []
 
-    def add_wrapped_item(self, text: str, color: str) -> None:
+    def _append_wrapped_item(self, text: str, color: str) -> None:
         item = QListWidgetItem()
         label = QLabel(text)
         label.setWordWrap(True)
@@ -107,7 +117,24 @@ class WrappingListWidget(QListWidget):
         label.setStyleSheet(f"padding: 6px 8px; color: {color};")
         self.addItem(item)
         self.setItemWidget(item, label)
+
+    def add_wrapped_item(self, text: str, color: str) -> None:
+        self._append_wrapped_item(text=text, color=color)
         self._refresh_item_heights()
+
+    def set_wrapped_items(self, entries: list[tuple[str, str]]) -> None:
+        normalized_entries = [(str(text), str(color)) for text, color in entries]
+        if normalized_entries == self._rendered_entries:
+            return
+        self._rendered_entries = list(normalized_entries)
+        super().clear()
+        for text, color in normalized_entries:
+            self._append_wrapped_item(text=text, color=color)
+        self._refresh_item_heights()
+
+    def clear(self) -> None:  # type: ignore[override]
+        self._rendered_entries = []
+        super().clear()
 
     def resizeEvent(self, event):  # type: ignore[override]
         super().resizeEvent(event)
@@ -786,6 +813,8 @@ class MainWindow(QMainWindow):
         self._trucks: list[Truck] = []
         self._kit_index: dict[int, tuple[Truck, TruckKit]] = {}
         self._schedule_insights: ScheduleInsights | None = None
+        self._dashboard_metrics: DashboardMetrics | None = None
+        self._kit_stage_windows_by_truck: dict[tuple[int, str, int], tuple[float, float]] = {}
         self._minority_report_mode = False
         self._hot_reload_enabled = hot_reload_active
         self._hot_reload_request_id: str = ""
@@ -1036,14 +1065,14 @@ class MainWindow(QMainWindow):
     def _on_minority_report_toggled(self, checked: bool) -> None:
         self._minority_report_mode = bool(checked)
         self._apply_visual_mode()
-        if self._schedule_insights is None:
+        if self._schedule_insights is None or self._dashboard_metrics is None:
             return
-        metrics = compute_dashboard_metrics(self._trucks, schedule_insights=self._schedule_insights)
-        self._update_health_strip(metrics)
-        self._update_attention_panel(metrics)
-        self._update_gantt_panel()
-        if hasattr(self, "_schedule_start_label"):
-            self._update_schedule_panel()
+        with self._batch_dashboard_ui_updates():
+            self._update_health_strip(self._dashboard_metrics)
+            self._update_attention_panel(self._dashboard_metrics)
+            self._update_gantt_panel()
+            if hasattr(self, "_schedule_start_label"):
+                self._update_schedule_panel()
 
     def _apply_visual_mode(self) -> None:
         dark = bool(self._minority_report_mode)
@@ -1236,46 +1265,25 @@ class MainWindow(QMainWindow):
                 signal_state = str(tile.get("signal_state", "off"))
                 self._apply_signal_tile_state(tile, signal_state)
 
-    def refresh_view(self) -> None:
-        loaded_trucks = sort_trucks_natural(self.database.load_trucks_with_kits(active_only=True))
-        self._trucks = [
-            truck for truck in loaded_trucks if truck.is_visible and not self._is_truck_complete(truck)
-        ]
-        self._schedule_insights = build_schedule_insights(self._trucks)
-        kit_stage_windows_by_truck = self._build_kit_stage_windows_map()
-
-        self._kit_index = {}
-        for truck in self._trucks:
+    @staticmethod
+    def _build_kit_index(trucks: list[Truck]) -> dict[int, tuple[Truck, TruckKit]]:
+        kit_index: dict[int, tuple[Truck, TruckKit]] = {}
+        for truck in trucks:
             for kit in truck.kits:
                 if kit.id is not None:
-                    self._kit_index[kit.id] = (truck, kit)
+                    kit_index[int(kit.id)] = (truck, kit)
+        return kit_index
 
-        self._board_widget.set_data(
-            self._trucks,
-            self._schedule_insights.kit_release_hold_weeks_by_id,
-            self._schedule_insights.current_week,
-            kit_stage_windows_by_truck,
-        )
-
-        metrics = compute_dashboard_metrics(self._trucks, schedule_insights=self._schedule_insights)
-        self._update_health_strip(metrics)
-        self._update_attention_panel(metrics)
-        self._update_gantt_panel()
-
-        hold_count = len(self._schedule_insights.release_hold_items)
-        self._status_label.setText(
-            f"Week of {_current_week_of_label()} | Trucks: {len(self._trucks)} "
-            f"| Active Kits: {len(self._kit_index)} | Engineering Holds: {hold_count}"
-        )
-
-    def _build_kit_stage_windows_map(self) -> dict[tuple[int, str, int], tuple[float, float]]:
-        if not self._schedule_insights:
-            return {}
+    @staticmethod
+    def _build_kit_stage_windows_map(
+        trucks: list[Truck],
+        schedule_insights: ScheduleInsights,
+    ) -> dict[tuple[int, str, int], tuple[float, float]]:
         mapping: dict[tuple[int, str, int], tuple[float, float]] = {}
-        planned_start_by_truck_id = self._schedule_insights.truck_planned_start_week_by_id
-        for window in self._schedule_insights.kit_operation_windows:
+        planned_start_by_truck_id = schedule_insights.truck_planned_start_week_by_id
+        for window in schedule_insights.kit_operation_windows:
             kit_name = str(window.kit_name or "").strip().lower()
-            for truck in self._trucks:
+            for truck in trucks:
                 if truck.id is None:
                     continue
                 truck_start_week = planned_start_by_truck_id.get(int(truck.id))
@@ -1288,9 +1296,93 @@ class MainWindow(QMainWindow):
                 )
         return mapping
 
+    def _build_dashboard_view_state(self, trucks: list[Truck]) -> DashboardViewState:
+        ordered_trucks = sort_trucks_natural(list(trucks))
+        schedule_insights = build_schedule_insights(ordered_trucks)
+        dashboard_metrics = compute_dashboard_metrics(
+            ordered_trucks,
+            schedule_insights=schedule_insights,
+        )
+        kit_index = self._build_kit_index(ordered_trucks)
+        kit_stage_windows_by_truck = self._build_kit_stage_windows_map(
+            ordered_trucks,
+            schedule_insights,
+        )
+        return DashboardViewState(
+            trucks=ordered_trucks,
+            kit_index=kit_index,
+            schedule_insights=schedule_insights,
+            dashboard_metrics=dashboard_metrics,
+            kit_stage_windows_by_truck=kit_stage_windows_by_truck,
+        )
+
+    @contextmanager
+    def _batch_dashboard_ui_updates(self):
+        widgets: list[QWidget] = []
+        for candidate in (
+            self,
+            getattr(self, "_board_widget", None),
+            getattr(self, "_attention_list", None),
+            getattr(self, "_gantt_tabs", None),
+        ):
+            if isinstance(candidate, QWidget) and candidate.updatesEnabled():
+                candidate.setUpdatesEnabled(False)
+                widgets.append(candidate)
+        try:
+            yield
+        finally:
+            for widget in reversed(widgets):
+                widget.setUpdatesEnabled(True)
+                widget.update()
+
+    def _apply_dashboard_view_state(self, state: DashboardViewState) -> None:
+        self._trucks = list(state.trucks)
+        self._kit_index = dict(state.kit_index)
+        self._schedule_insights = state.schedule_insights
+        self._dashboard_metrics = state.dashboard_metrics
+        self._kit_stage_windows_by_truck = dict(state.kit_stage_windows_by_truck)
+
+        with self._batch_dashboard_ui_updates():
+            self._board_widget.set_data(
+                self._trucks,
+                self._schedule_insights.kit_release_hold_weeks_by_id,
+                self._schedule_insights.current_week,
+                self._kit_stage_windows_by_truck,
+            )
+            self._update_schedule_panel()
+            self._update_health_strip(self._dashboard_metrics)
+            self._update_attention_panel(self._dashboard_metrics)
+            self._update_gantt_panel()
+
+            hold_count = len(self._schedule_insights.release_hold_items)
+            self._status_label.setText(
+                f"Week of {_current_week_of_label()} | Trucks: {len(self._trucks)} "
+                f"| Active Kits: {len(self._kit_index)} | Engineering Holds: {hold_count}"
+            )
+
+    def refresh_view(self) -> None:
+        state = self._build_dashboard_view_state(load_active_dashboard_trucks(self.database))
+        self._apply_dashboard_view_state(state)
+
+    def _refresh_changed_truck(self, truck_id: int | None) -> None:
+        if truck_id is None or truck_id <= 0 or not self._trucks:
+            self.refresh_view()
+            return
+
+        updated_truck = self.database.load_truck_with_kits(int(truck_id), active_only=True)
+        refreshed_trucks = [
+            truck for truck in self._trucks
+            if int(truck.id or -1) != int(truck_id)
+        ]
+        if updated_truck is not None and updated_truck.is_visible and not is_truck_complete(updated_truck):
+            refreshed_trucks.append(updated_truck)
+
+        state = self._build_dashboard_view_state(refreshed_trucks)
+        self._apply_dashboard_view_state(state)
+
     def _on_manage_truck_plan(self) -> None:
         all_trucks = sort_trucks_natural(self.database.load_trucks_with_kits(active_only=True))
-        planned_trucks = [truck for truck in all_trucks if not self._is_truck_complete(truck)]
+        planned_trucks = [truck for truck in all_trucks if not is_truck_complete(truck)]
         if not planned_trucks:
             QMessageBox.information(self, "No Trucks", "There are no trucks available to plan.")
             return
@@ -1338,7 +1430,7 @@ class MainWindow(QMainWindow):
         except sqlite3.Error as exc:
             QMessageBox.critical(self, "Update Failed", f"Could not save kit changes: {exc}")
             return
-        self.refresh_view()
+        self._refresh_changed_truck(truck.id)
 
     def _on_kit_stage_drop_requested(self, kit_id: int, target_stage_id: int) -> None:
         result = self._kit_index.get(kit_id)
@@ -1390,18 +1482,11 @@ class MainWindow(QMainWindow):
         except sqlite3.Error as exc:
             QMessageBox.critical(self, "Move Failed", f"Could not move kit to {stage_label(target_stage)}: {exc}")
             return
-        self.refresh_view()
+        self._refresh_changed_truck(truck.id)
         self.statusBar().showMessage(
             f"Moved {truck.truck_number} {kit.kit_name} to {stage_label(target_stage)}",
             3000,
         )
-
-    @staticmethod
-    def _is_truck_complete(truck: Truck) -> bool:
-        active_kits = [kit for kit in truck.kits if kit.is_active]
-        if not active_kits:
-            return False
-        return all(stage_from_id(kit.front_stage_id) == Stage.COMPLETE for kit in active_kits)
 
     def _build_health_strip(self) -> QWidget:
         strip = QWidget()
@@ -1955,6 +2040,54 @@ class MainWindow(QMainWindow):
                 continue
             self._set_context_pixmap(context, source_pixmap)
 
+    @staticmethod
+    def _gantt_rows_render_signature(
+        *,
+        rows: list[OverlayRow],
+        current_week: float,
+        min_week: float,
+        max_week: float,
+        is_per_truck: bool,
+        dark_mode: bool,
+    ) -> tuple[object, ...]:
+        row_signature: list[tuple[object, ...]] = []
+        for row in rows:
+            windows_signature = tuple(
+                (
+                    int(stage),
+                    round(float(bounds[0]), 4),
+                    round(float(bounds[1]), 4),
+                )
+                for stage, bounds in sorted(row.windows.items(), key=lambda item: int(item[0]))
+            )
+            row_signature.append(
+                (
+                    str(row.row_label or ""),
+                    windows_signature,
+                    int(row.front_position),
+                    int(row.back_position),
+                    int(row.expected_position),
+                    round(float(row.front_week), 4),
+                    round(float(row.back_week), 4),
+                    round(float(row.expected_week), 4) if row.expected_week is not None else None,
+                    round(float(row.latest_due_week), 4),
+                    bool(row.released),
+                    bool(row.blocked),
+                    str(row.blocked_reason or ""),
+                    str(row.status_key or ""),
+                    bool(row.is_behind),
+                    bool(row.is_not_due),
+                )
+            )
+        return (
+            tuple(row_signature),
+            round(float(current_week), 4),
+            round(float(min_week), 4),
+            round(float(max_week), 4),
+            bool(is_per_truck),
+            bool(dark_mode),
+        )
+
     def _populate_gantt_context(
         self,
         *,
@@ -1965,9 +2098,15 @@ class MainWindow(QMainWindow):
         max_week: float,
         is_per_truck: bool,
         empty_message: str,
+        render_signature: tuple[object, ...] | None = None,
     ) -> None:
+        if render_signature is not None and context.get("render_signature") == render_signature:
+            return
+
         if not rows:
             self._set_gantt_message(context, empty_message)
+            if render_signature is not None:
+                context["render_signature"] = render_signature
             return
 
         chart_width = 30
@@ -1990,6 +2129,8 @@ class MainWindow(QMainWindow):
                 self._set_context_pixmap(context, pixmap)
                 chart_scroll.setVisible(True)
                 table.setVisible(False)
+                if render_signature is not None:
+                    context["render_signature"] = render_signature
                 return
         chart_label.clear()
         context.pop("source_pixmap", None)
@@ -2047,6 +2188,8 @@ class MainWindow(QMainWindow):
             table.setItem(row_index, 0, truck_item)
             table.setItem(row_index, 1, scheduled_item)
             table.setItem(row_index, 2, actual_item)
+        if render_signature is not None:
+            context["render_signature"] = render_signature
 
     def _update_gantt_panel(self) -> None:
         if not hasattr(self, "_gantt_context") or self._schedule_insights is None:
@@ -2091,23 +2234,27 @@ class MainWindow(QMainWindow):
             max_week=max_week,
             is_per_truck=False,
             empty_message="No gantt data.",
+            render_signature=self._gantt_rows_render_signature(
+                rows=rows,
+                current_week=current_week,
+                min_week=min_week,
+                max_week=max_week,
+                is_per_truck=False,
+                dark_mode=bool(self._minority_report_mode),
+            ),
         )
+
+        rows_by_truck_number: dict[str, list[OverlayRow]] = {}
+        for row in rows:
+            truck_number = str(row.row_label or "").split("|", 1)[0].strip()
+            rows_by_truck_number.setdefault(truck_number, []).append(row)
 
         for truck in self._trucks:
             key = self._gantt_tab_key(truck)
             context = self._gantt_contexts.get(key)
             if context is None:
                 continue
-            truck_rows = build_overlay_rows(
-                trucks=[truck],
-                schedule_insights=insights,
-                max_rows=max(1, len([kit for kit in truck.kits if kit.is_active]) * 4),
-            )
-            truck_rows = normalize_overlay_row_labels(
-                truck_rows,
-                truck_width=shared_truck_width,
-                kit_width=shared_kit_width,
-            )
+            truck_rows = list(rows_by_truck_number.get(str(truck.truck_number or "").strip(), []))
             self._populate_gantt_context(
                 context=context,
                 rows=truck_rows,
@@ -2116,6 +2263,14 @@ class MainWindow(QMainWindow):
                 max_week=max_week,
                 is_per_truck=True,
                 empty_message=f"{truck.truck_number} has no gantt rows.",
+                render_signature=self._gantt_rows_render_signature(
+                    rows=truck_rows,
+                    current_week=current_week,
+                    min_week=min_week,
+                    max_week=max_week,
+                    is_per_truck=True,
+                    dark_mode=bool(self._minority_report_mode),
+                ),
             )
         splitter = getattr(self, "_board_gantt_splitter", None)
         main_splitter = getattr(self, "_main_splitter", None)
@@ -2213,6 +2368,7 @@ class MainWindow(QMainWindow):
             "detail": None,
             "signal_lights": light_widgets,
             "signal_state": "off",
+            "signal_dark_mode": bool(self._minority_report_mode),
         }
         self._apply_signal_tile_state(tile, "off")
         return tile
@@ -2221,8 +2377,13 @@ class MainWindow(QMainWindow):
         lights = tile.get("signal_lights")
         if not isinstance(lights, dict):
             return
-
         dark = bool(self._minority_report_mode)
+        if (
+            str(tile.get("signal_state", "off")) == str(state)
+            and bool(tile.get("signal_dark_mode", dark)) == dark
+        ):
+            return
+
         palette = {
             "red": {
                 "active_fill": "#FF6B6B" if dark else "#DC2626",
@@ -2255,13 +2416,7 @@ class MainWindow(QMainWindow):
             )
 
         tile["signal_state"] = state
-
-    @staticmethod
-    def _format_signal_drivers(drivers: tuple[str, ...] | list[str]) -> str:
-        values = [str(item).strip() for item in drivers if str(item).strip()]
-        if not values:
-            return "No kits"
-        return ", ".join(values)
+        tile["signal_dark_mode"] = dark
 
     @staticmethod
     def _format_late_weeks(value: float) -> str:
@@ -2360,132 +2515,49 @@ class MainWindow(QMainWindow):
         self._standards_label.setText("\n".join(lines))
 
     def _update_health_strip(self, metrics: DashboardMetrics) -> None:
-        laser_signal_map = {
-            "healthy": "green",
-            "low": "yellow",
-            "dry": "red",
-        }
         self._apply_signal_tile_state(
             self._tile_widgets["laser_buffer"],
-            laser_signal_map.get(metrics.laser_buffer.level, "off"),
+            signal_state_for_level(metrics.laser_buffer.level, family="laser"),
         )
         self._set_signal_tile_detail("laser_buffer", metrics.laser_buffer.drivers)
-
-        bend_signal_map = {
-            "healthy": "green",
-            "low": "yellow",
-            "dry": "red",
-        }
         self._apply_signal_tile_state(
             self._tile_widgets["bend_buffer"],
-            bend_signal_map.get(metrics.bend_buffer.level, "off"),
+            signal_state_for_level(metrics.bend_buffer.level, family="brake"),
         )
         self._set_signal_tile_detail("bend_buffer", metrics.bend_buffer.drivers)
-
-        weld_signal_map = {
-            "healthy": "green",
-            "watch": "yellow",
-            "low": "red",
-        }
         self._apply_signal_tile_state(
             self._tile_widgets["weld_feed_a"],
-            weld_signal_map.get(metrics.weld_feed_a.level, "off"),
+            signal_state_for_level(metrics.weld_feed_a.level, family="weld"),
         )
         self._set_signal_tile_detail("weld_feed_a", metrics.weld_feed_a.drivers)
         self._apply_signal_tile_state(
             self._tile_widgets["weld_feed_b"],
-            weld_signal_map.get(metrics.weld_feed_b.level, "off"),
+            signal_state_for_level(metrics.weld_feed_b.level, family="weld"),
         )
         self._set_signal_tile_detail("weld_feed_b", metrics.weld_feed_b.drivers)
 
     def _update_attention_panel(self, metrics: DashboardMetrics) -> None:
-        self._attention_list.clear()
-        hold_items = []
-        behind_rows: list[OverlayRow] = []
-        if self._schedule_insights is not None:
-            hold_items = list(self._schedule_insights.release_hold_items)
-            behind_rows = [
-                row
-                for row in build_overlay_rows(
-                    trucks=list(self._trucks),
-                    schedule_insights=self._schedule_insights,
-                    max_rows=max(1, len(self._trucks) * 8),
-                )
-                if row.is_behind
-            ]
-
-        duplicated_signal_titles = {
-            "Next Body not released",
-            "Weld feed low",
-            "Bend buffer dry",
-            "Bend buffer low",
-            "No urgent flow risks",
-        }
-        shown_count = 0
-        seen_texts: set[str] = set()
-        for item in metrics.attention_items:
-            if hold_items and item.title == "Engineering release is holding work start":
-                # Kit-level lines below already cover this signal with more detail.
-                continue
-            if item.title in duplicated_signal_titles:
-                continue
-
-            shown_count += 1
-            text = f"{shown_count}. {item.title}: {item.detail}"
-            if text in seen_texts:
-                continue
-            seen_texts.add(text)
-            if item.priority >= 90:
+        if self._schedule_insights is None:
+            self._attention_list.set_wrapped_items([])
+            return
+        attention_lines = build_dashboard_attention_lines(
+            trucks=self._trucks,
+            dashboard_metrics=metrics,
+            schedule_insights=self._schedule_insights,
+            include_empty_message=True,
+        )
+        rendered_lines: list[tuple[str, str]] = []
+        for item in attention_lines:
+            if item.tone == "problem":
                 color = "#FF7A7A" if self._minority_report_mode else "#B91C1C"
-            elif item.priority >= 70:
+            elif item.tone == "caution":
                 color = "#FFC67A" if self._minority_report_mode else "#A16207"
+            elif item.tone == "muted":
+                color = "#B7D5EA" if self._minority_report_mode else "#475569"
             else:
                 color = "#B7D5EA" if self._minority_report_mode else "#1F2937"
-            self._attention_list.add_wrapped_item(text=text, color=color)
-        if shown_count == 0 and not hold_items:
-            self._attention_list.add_wrapped_item(
-                text="No additional attention items.",
-                color="#B7D5EA" if self._minority_report_mode else "#475569",
-            )
-            return
-        if not hold_items and not behind_rows:
-            return
-
-        late_release_keys = {
-            (str(hold.truck_number or "").strip().lower(), str(hold.kit_name or "").strip().lower())
-            for hold in hold_items
-        }
-
-        next_index = shown_count + 1
-        for row_offset, hold in enumerate(hold_items):
-            rank = next_index + row_offset
-            text = (
-                f"{rank}. Late Release: {hold.truck_number} {hold.kit_name} "
-                f"({self._format_late_weeks(hold.hold_weeks)})"
-            )
-            self._attention_list.add_wrapped_item(
-                text=text,
-                color="#FF8B8B" if self._minority_report_mode else "#991B1B",
-            )
-
-        late_fabrication_rows: list[tuple[str, str]] = []
-        for row in behind_rows:
-            parts = [part.strip() for part in str(row.row_label or "").split("|", 1)]
-            if len(parts) != 2:
-                continue
-            key = (parts[0].lower(), parts[1].lower())
-            if key in late_release_keys:
-                continue
-            late_fabrication_rows.append((parts[0], parts[1]))
-
-        late_start_index = next_index + len(hold_items)
-        for row_offset, (truck_number, kit_name) in enumerate(late_fabrication_rows):
-            rank = late_start_index + row_offset
-            text = f"{rank}. Behind Schedule: {truck_number} {kit_name}"
-            self._attention_list.add_wrapped_item(
-                text=text,
-                color="#FFD39A" if self._minority_report_mode else "#92400E",
-            )
+            rendered_lines.append((item.text, color))
+        self._attention_list.set_wrapped_items(rendered_lines)
 
     def _publish_dashboard_snapshot_to_teams(self) -> None:
         webhook_url = self._current_teams_webhook_url()
@@ -2506,21 +2578,21 @@ class MainWindow(QMainWindow):
         payload_size = 0
         row_limit = 0
         try:
-            dashboard_metrics, _snapshot_metrics, artifacts = self._build_publish_artifacts()
-
-            payload, payload_size, row_limit = self._build_sized_dashboard_publish_payload(
+            snapshot = build_dashboard_publish_snapshot(
+                project_root=Path(__file__).resolve().parent,
+                trucks=self._trucks,
+                schedule_insights=self._schedule_insights,
+                dashboard_metrics=self._dashboard_metrics,
+            )
+            payload, payload_size, row_limit = build_sized_dashboard_publish_payload(
+                snapshot=snapshot,
                 max_payload_bytes=TEAMS_ADAPTIVE_CARD_MAX_PAYLOAD_BYTES,
-                dashboard_metrics=dashboard_metrics,
-                artifact_links=artifacts.action_links,
-                generated_at=artifacts.generated_at,
             )
 
             project_root = Path(__file__).resolve().parent
-            output_path = project_root / "_runtime" / "teams_dashboard_card.json"
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            output_path = write_dashboard_payload(project_root / "_runtime" / "teams_dashboard_card.json", payload)
 
-            status = self._post_json_webhook(webhook_url, payload)
+            status, _body = post_json_webhook(webhook_url, payload)
             self.statusBar().showMessage(
                 f"Published dashboard snapshot to Teams ({status}, {payload_size} bytes, {row_limit} rows).",
                 5000,
@@ -2531,13 +2603,13 @@ class MainWindow(QMainWindow):
                 (
                     "Dashboard snapshot published to Teams.\n"
                     f"Artifacts:\n"
-                    f"- Summary HTML: {artifacts.summary_html_path}\n"
-                    f"- Gantt PNG: {artifacts.gantt_png_path or 'not generated'}\n"
-                    f"- Status JSON: {artifacts.status_json_path}\n"
+                    f"- Summary HTML: {snapshot.artifacts.summary_html_path}\n"
+                    f"- Gantt PNG: {snapshot.artifacts.gantt_png_path or 'not generated'}\n"
+                    f"- Status JSON: {snapshot.artifacts.status_json_path}\n"
                     f"Resolved links:\n"
-                    f"- Dashboard: {artifacts.action_links.get('summary_html_url', '')}\n"
-                    f"- Gantt: {artifacts.action_links.get('gantt_png_url', '')}\n"
-                    f"- JSON: {artifacts.action_links.get('status_json_url', '')}\n"
+                    f"- Dashboard: {snapshot.artifacts.action_links.get('summary_html_url', '')}\n"
+                    f"- Gantt: {snapshot.artifacts.action_links.get('gantt_png_url', '')}\n"
+                    f"- JSON: {snapshot.artifacts.action_links.get('status_json_url', '')}\n"
                     f"HTTP status: {status}\n"
                     f"Payload bytes: {payload_size}\n"
                     f"Rows: {row_limit}\n"
@@ -2578,7 +2650,12 @@ class MainWindow(QMainWindow):
                 return
 
         try:
-            _dashboard_metrics, _snapshot_metrics, artifacts = self._build_publish_artifacts()
+            snapshot = build_dashboard_publish_snapshot(
+                project_root=Path(__file__).resolve().parent,
+                trucks=self._trucks,
+                schedule_insights=self._schedule_insights,
+                dashboard_metrics=self._dashboard_metrics,
+            )
         except OSError as exc:
             QMessageBox.critical(
                 self,
@@ -2589,74 +2666,12 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage(
             (
-                f"Published gantt updated: {artifacts.gantt_png_path or 'not generated'}"
-                if artifacts.gantt_png_path
+                f"Published gantt updated: {snapshot.artifacts.gantt_png_path or 'not generated'}"
+                if snapshot.artifacts.gantt_png_path
                 else "Published gantt update completed."
             ),
             5000,
         )
-
-    def _build_publish_artifacts(
-        self,
-    ) -> tuple[DashboardMetrics, SnapshotMetrics, ArtifactPublishResult]:
-        dashboard_metrics = compute_dashboard_metrics(
-            self._trucks,
-            schedule_insights=self._schedule_insights,
-        )
-        snapshot_metrics = compute_snapshot_metrics(
-            self._trucks,
-            schedule_insights=self._schedule_insights,
-            dashboard_metrics=dashboard_metrics,
-        )
-
-        project_root = Path(__file__).resolve().parent
-        artifacts = publish_compact_artifacts(
-            project_root=project_root,
-            trucks=self._trucks,
-            dashboard_metrics=dashboard_metrics,
-            schedule_insights=self._schedule_insights,
-            snapshot_metrics=snapshot_metrics,
-        )
-        return (dashboard_metrics, snapshot_metrics, artifacts)
-
-    def _build_sized_dashboard_publish_payload(
-        self,
-        *,
-        max_payload_bytes: int,
-        dashboard_metrics: DashboardMetrics,
-        artifact_links: dict[str, str],
-        generated_at: datetime | None = None,
-    ) -> tuple[dict[str, object], int, int]:
-        if self._schedule_insights is None:
-            return ({}, 0, 0)
-
-        candidates = (8, 6, 5, 4, 3)
-        best_payload: dict[str, object] | None = None
-        best_size: int | None = None
-        best_rows = 0
-
-        for max_rows in candidates:
-            # Reduce truck rows until payload fits webhook size constraints.
-            payload = build_teams_webhook_payload(
-                trucks=self._trucks,
-                dashboard_metrics=dashboard_metrics,
-                schedule_insights=self._schedule_insights,
-                max_trucks=max_rows,
-                max_attention=3,
-                artifact_links=artifact_links,
-                generated_at=generated_at,
-            )
-            payload_size = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
-            if best_size is None or payload_size < best_size:
-                best_payload = payload
-                best_size = payload_size
-                best_rows = max_rows
-            if payload_size <= max_payload_bytes:
-                return (payload, payload_size, max_rows)
-
-        if best_payload is not None and best_size is not None:
-            return (best_payload, best_size, best_rows)
-        return ({}, 0, 0)
 
     def _current_teams_webhook_url(self) -> str:
         if hasattr(self, "_teams_webhook_input"):
@@ -2664,18 +2679,6 @@ class MainWindow(QMainWindow):
             if value:
                 return value
         return str(DEFAULT_TEAMS_WEBHOOK_URL).strip()
-
-    @staticmethod
-    def _post_json_webhook(webhook_url: str, payload: dict[str, object]) -> int:
-        raw = json.dumps(payload).encode("utf-8")
-        request = urllib.request.Request(
-            webhook_url,
-            data=raw,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=20) as response:
-            return int(getattr(response, "status", response.getcode()))
 
 
 

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
+from dashboard_helpers import sort_trucks_natural
 from models import Truck, TruckKit
 from schedule import ScheduleInsights, build_schedule_insights
 from stages import FABRICATION_STAGE_POSITION_SCALE, Stage, stage_from_id, stage_label
@@ -61,26 +61,6 @@ class SnapshotTruckRow:
 class SnapshotMetrics:
     sync_summary: SnapshotSyncSummary
     truck_rows: list[SnapshotTruckRow]
-
-
-def sort_trucks_natural(trucks: list[Truck]) -> list[Truck]:
-    number_pattern = re.compile(r"(\d+)")
-
-    def key_fn(truck: Truck) -> tuple[int, int, int, int | str]:
-        build_order = int(truck.build_order or 0)
-        match = number_pattern.search(truck.truck_number)
-        numeric_part = int(match.group(1)) if match else 0
-        text_fallback: int | str = truck.truck_number.lower() if not match else numeric_part
-        return (
-            0 if build_order > 0 else 1,
-            build_order if build_order > 0 else 0,
-            0 if match else 1,
-            text_fallback,
-        )
-
-    return sorted(trucks, key=key_fn)
-
-
 def compute_dashboard_metrics(
     trucks: list[Truck],
     schedule_insights: ScheduleInsights | None = None,

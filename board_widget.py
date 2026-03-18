@@ -58,6 +58,84 @@ def _normalize_kit_name(value: str) -> str:
     return str(value or "").strip().lower()
 
 
+def _kit_window_signature(
+    *,
+    truck_id: int,
+    kit_name: str,
+    kit_stage_windows_by_truck: dict[tuple[int, str, int], tuple[float, float]],
+) -> tuple[tuple[int, float, float], ...]:
+    normalized_name = _normalize_kit_name(kit_name)
+    windows: list[tuple[int, float, float]] = []
+    for stage in STAGE_SEQUENCE:
+        bounds = kit_stage_windows_by_truck.get((truck_id, normalized_name, int(stage)))
+        if bounds is None:
+            continue
+        windows.append((int(stage), round(float(bounds[0]), 4), round(float(bounds[1]), 4)))
+    return tuple(windows)
+
+
+def _kit_render_signature(
+    *,
+    truck_id: int,
+    kit: TruckKit,
+    hold_weeks_by_id: dict[int, float],
+    kit_stage_windows_by_truck: dict[tuple[int, str, int], tuple[float, float]],
+) -> tuple[object, ...]:
+    hold_weeks = None
+    if kit.id is not None:
+        raw_hold_weeks = hold_weeks_by_id.get(int(kit.id))
+        if raw_hold_weeks is not None:
+            hold_weeks = round(float(raw_hold_weeks), 4)
+
+    return (
+        int(kit.id or -1),
+        str(kit.kit_name or "").strip(),
+        int(kit.kit_order),
+        bool(kit.is_main_kit),
+        str(kit.release_state or "").strip(),
+        int(kit.front_stage_id),
+        int(kit.back_stage_id),
+        int(kit.front_position),
+        int(kit.back_position),
+        bool(getattr(kit, "keep_tail_at_head", True)),
+        str(kit.blocker or "").strip(),
+        first_pdf_link(getattr(kit, "pdf_links", "")),
+        hold_weeks,
+        _kit_window_signature(
+            truck_id=truck_id,
+            kit_name=str(kit.kit_name or ""),
+            kit_stage_windows_by_truck=kit_stage_windows_by_truck,
+        ),
+    )
+
+
+def _truck_render_signature(
+    *,
+    truck: Truck,
+    hold_weeks_by_id: dict[int, float],
+    current_week: float | None,
+    kit_stage_windows_by_truck: dict[tuple[int, str, int], tuple[float, float]],
+) -> tuple[object, ...]:
+    truck_id = int(truck.id or -1)
+    active_kits = [kit for kit in sorted(truck.kits, key=lambda value: value.kit_order) if kit.is_active]
+    return (
+        truck_id,
+        str(truck.truck_number or "").strip(),
+        str(truck.client or "").strip(),
+        str(truck.planned_start_date or "").strip(),
+        round(float(current_week), 4) if current_week is not None else None,
+        tuple(
+            _kit_render_signature(
+                truck_id=truck_id,
+                kit=kit,
+                hold_weeks_by_id=hold_weeks_by_id,
+                kit_stage_windows_by_truck=kit_stage_windows_by_truck,
+            )
+            for kit in active_kits
+        ),
+    )
+
+
 def _calendar_year_from_date(value: str) -> int | None:
     text = str(value or "").strip()
     if not text:
@@ -760,6 +838,7 @@ class BoardWidget(QWidget):
         super().__init__(parent)
         self._dark_mode = False
         self._row_widgets: list[TruckRowWidget] = []
+        self._row_signatures: list[tuple[object, ...]] = []
         self._stage_headers: list[QLabel] = []
         self._truck_header: QLabel | None = None
         self._header_widget: QWidget | None = None
@@ -800,6 +879,7 @@ class BoardWidget(QWidget):
                 self._last_hold_weeks_map,
                 self._last_current_week,
                 self._last_stage_windows_map,
+                force_rebuild=True,
             )
 
     def _apply_visual_mode(self) -> None:
@@ -836,15 +916,61 @@ class BoardWidget(QWidget):
         kit_release_hold_weeks_by_id: dict[int, float] | None = None,
         current_week: float | None = None,
         kit_stage_windows_by_truck: dict[tuple[int, str, int], tuple[float, float]] | None = None,
+        *,
+        force_rebuild: bool = False,
     ) -> None:
-        _clear_layout(self._content_layout)
-        self._row_widgets = []
         self._last_trucks = list(trucks)
         hold_weeks_map = kit_release_hold_weeks_by_id or {}
         stage_windows_map = kit_stage_windows_by_truck or {}
         self._last_hold_weeks_map = dict(hold_weeks_map)
         self._last_current_week = current_week
         self._last_stage_windows_map = dict(stage_windows_map)
+
+        desired_signatures = [
+            _truck_render_signature(
+                truck=truck,
+                hold_weeks_by_id=hold_weeks_map,
+                current_week=current_week,
+                kit_stage_windows_by_truck=stage_windows_map,
+            )
+            for truck in trucks
+        ]
+        desired_ids = [int(truck.id or -1) for truck in trucks]
+        existing_ids = [int(getattr(row_widget, "_truck_id", -1)) for row_widget in self._row_widgets]
+
+        if (
+            not force_rebuild
+            and trucks
+            and self._row_widgets
+            and desired_ids == existing_ids
+            and len(self._row_signatures) == len(desired_signatures)
+        ):
+            changed = False
+            for index, truck in enumerate(trucks):
+                if self._row_signatures[index] == desired_signatures[index]:
+                    continue
+                row_widget = self._create_row_widget(
+                    truck=truck,
+                    accent_color=ACCENT_COLORS[index % len(ACCENT_COLORS)],
+                    hold_weeks_map=hold_weeks_map,
+                    current_week=current_week,
+                    stage_windows_map=stage_windows_map,
+                )
+                old_widget = self._row_widgets[index]
+                self._content_layout.insertWidget(index, row_widget)
+                self._content_layout.removeWidget(old_widget)
+                old_widget.deleteLater()
+                self._row_widgets[index] = row_widget
+                self._row_signatures[index] = desired_signatures[index]
+                changed = True
+
+            if changed:
+                QTimer.singleShot(0, self._apply_column_widths)
+            return
+
+        _clear_layout(self._content_layout)
+        self._row_widgets = []
+        self._row_signatures = []
 
         if not trucks:
             empty_label = QLabel("No trucks in flow. Use the CSV registry to add trucks.")
@@ -859,22 +985,40 @@ class BoardWidget(QWidget):
             return
 
         for index, truck in enumerate(trucks):
-            accent_color = ACCENT_COLORS[index % len(ACCENT_COLORS)]
-            row_widget = TruckRowWidget(
+            row_widget = self._create_row_widget(
                 truck=truck,
-                accent_color=accent_color,
-                kit_release_hold_weeks_by_id=hold_weeks_map,
+                accent_color=ACCENT_COLORS[index % len(ACCENT_COLORS)],
+                hold_weeks_map=hold_weeks_map,
                 current_week=current_week,
-                kit_stage_windows_by_truck=stage_windows_map,
-                dark_mode=self._dark_mode,
+                stage_windows_map=stage_windows_map,
             )
             self._row_widgets.append(row_widget)
-            row_widget.kit_selected.connect(self.kit_selected.emit)
-            row_widget.kit_stage_dropped.connect(self.kit_stage_drop_requested.emit)
+            self._row_signatures.append(desired_signatures[index])
             self._content_layout.addWidget(row_widget)
 
         self._content_layout.addStretch(1)
         QTimer.singleShot(0, self._apply_column_widths)
+
+    def _create_row_widget(
+        self,
+        *,
+        truck: Truck,
+        accent_color: str,
+        hold_weeks_map: dict[int, float],
+        current_week: float | None,
+        stage_windows_map: dict[tuple[int, str, int], tuple[float, float]],
+    ) -> TruckRowWidget:
+        row_widget = TruckRowWidget(
+            truck=truck,
+            accent_color=accent_color,
+            kit_release_hold_weeks_by_id=hold_weeks_map,
+            current_week=current_week,
+            kit_stage_windows_by_truck=stage_windows_map,
+            dark_mode=self._dark_mode,
+        )
+        row_widget.kit_selected.connect(self.kit_selected.emit)
+        row_widget.kit_stage_dropped.connect(self.kit_stage_drop_requested.emit)
+        return row_widget
 
     def _build_header(self) -> QWidget:
         header_widget = QWidget()

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from dashboard_helpers import sort_trucks_natural
 from models import Truck
 from stages import STAGE_SEQUENCE, Stage, stage_from_id, stage_from_key, stage_key
 
@@ -272,26 +272,6 @@ def load_schedule_config() -> ScheduleConfig:
         _SCHEDULE_CONFIG_CACHE = parsed
         _SCHEDULE_CONFIG_MTIME_NS = mtime_ns
     return parsed
-
-
-def sort_trucks_natural(trucks: list[Truck]) -> list[Truck]:
-    number_pattern = re.compile(r"(\d+)")
-
-    def key_fn(truck: Truck) -> tuple[int, int, int, int | str]:
-        build_order = int(truck.build_order or 0)
-        match = number_pattern.search(truck.truck_number)
-        numeric_part = int(match.group(1)) if match else 0
-        text_fallback: int | str = truck.truck_number.lower() if not match else numeric_part
-        return (
-            0 if build_order > 0 else 1,
-            build_order if build_order > 0 else 0,
-            0 if match else 1,
-            text_fallback,
-        )
-
-    return sorted(trucks, key=key_fn)
-
-
 def _planned_start_date_to_week(value: str) -> float | None:
     text = str(value or "").strip()
     if not text:

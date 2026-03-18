@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass, replace
 from typing import Callable
 
+from dashboard_helpers import normalize_blocked_state_from_kit
 from models import Truck, TruckKit
 from schedule import ScheduleInsights
 from stages import FABRICATION_ALLOWED_POSITIONS, FABRICATION_STAGE_POSITION_SCALE, Stage, stage_from_id
@@ -107,18 +108,6 @@ def _normalize_week_around_current(week_value: float, current_week: float) -> fl
     while (current - value) > 26.0:
         value += cycle
     return value
-
-
-def _normalize_blocked_state(kit: TruckKit) -> tuple[bool, str]:
-    blocked_reason = str(getattr(kit, "blocked_reason", "") or "").strip()
-    blocker_text = str(getattr(kit, "blocker", "") or "").strip()
-    blocked_flag = bool(getattr(kit, "blocked", False))
-    blocked = bool(blocked_flag or blocked_reason or blocker_text)
-    if not blocked:
-        return (False, "")
-    return (True, blocked_reason or blocker_text or "Blocked")
-
-
 def _normalize_release_state(kit: TruckKit) -> bool:
     release_state = str(getattr(kit, "release_state", "") or "").strip().lower()
     if release_state == "released":
@@ -383,7 +372,7 @@ def build_overlay_rows(
                 continue
 
             released = _normalize_release_state(kit)
-            blocked, blocked_reason = _normalize_blocked_state(kit)
+            blocked, blocked_reason = normalize_blocked_state_from_kit(kit)
             front_position, back_position = normalize_position_span(
                 getattr(kit, "front_position", None),
                 getattr(kit, "back_position", None),

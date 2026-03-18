@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from dashboard_helpers import normalize_blocked_state
 from models import DEFAULT_KIT_TEMPLATES, Truck, TruckKit, canonicalize_kit_name, now_iso
 from stages import (
     FABRICATION_ALLOWED_POSITIONS,
@@ -22,6 +23,67 @@ OVERLAY_ALLOWED_POSITIONS_SQL = ", ".join(str(value) for value in OVERLAY_ALLOWE
 class FabricationDatabase:
     def __init__(self, db_path: str | Path):
         self.db_path = str(db_path)
+
+    @staticmethod
+    def _load_active_templates(connection: sqlite3.Connection) -> list[sqlite3.Row]:
+        return connection.execute(
+            """
+            SELECT id, kit_name, kit_order, is_main_kit
+            FROM KitTemplate
+            WHERE is_active = 1
+            ORDER BY kit_order, id
+            """
+        ).fetchall()
+
+    @staticmethod
+    def _insert_default_kits_for_truck(
+        connection: sqlite3.Connection,
+        *,
+        truck_id: int,
+        templates: list[sqlite3.Row],
+        now_value: str,
+    ) -> None:
+        for template in templates:
+            connection.execute(
+                """
+                INSERT INTO TruckKit (
+                    truck_id,
+                    kit_template_id,
+                    parent_kit_id,
+                    kit_name,
+                    kit_order,
+                    is_main_kit,
+                    release_state,
+                    released_at,
+                    blocked,
+                    blocked_reason,
+                    front_stage_id,
+                    back_stage_id,
+                    front_position,
+                    back_position,
+                    keep_tail_at_head,
+                    blocker,
+                    pdf_links,
+                    is_active,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, NULL, ?, ?, ?, 'not_released', '', 0, '', ?, ?, ?, ?, 1, '', '', 1, ?, ?)
+                """,
+                (
+                    int(truck_id),
+                    int(template["id"]),
+                    template["kit_name"],
+                    int(template["kit_order"]),
+                    int(template["is_main_kit"]),
+                    int(Stage.RELEASE),
+                    int(Stage.RELEASE),
+                    10,
+                    10,
+                    now_value,
+                    now_value,
+                ),
+            )
 
     def initialize(self) -> None:
         with self._connect() as connection:
@@ -101,56 +163,13 @@ class FabricationDatabase:
             )
             truck_id = int(truck_cursor.lastrowid)
 
-            templates = connection.execute(
-                """
-                SELECT id, kit_name, kit_order, is_main_kit
-                FROM KitTemplate
-                WHERE is_active = 1
-                ORDER BY kit_order, id
-                """
-            ).fetchall()
-
-            for template in templates:
-                connection.execute(
-                    """
-                    INSERT INTO TruckKit (
-                        truck_id,
-                        kit_template_id,
-                        parent_kit_id,
-                        kit_name,
-                        kit_order,
-                        is_main_kit,
-                        release_state,
-                        released_at,
-                        blocked,
-                        blocked_reason,
-                        front_stage_id,
-                        back_stage_id,
-                        front_position,
-                        back_position,
-                        keep_tail_at_head,
-                        blocker,
-                        pdf_links,
-                        is_active,
-                        created_at,
-                        updated_at
-                    )
-                    VALUES (?, ?, NULL, ?, ?, ?, 'not_released', '', 0, '', ?, ?, ?, ?, 1, '', '', 1, ?, ?)
-                    """,
-                    (
-                        truck_id,
-                        int(template["id"]),
-                        template["kit_name"],
-                        int(template["kit_order"]),
-                        int(template["is_main_kit"]),
-                        int(Stage.RELEASE),
-                        int(Stage.RELEASE),
-                        10,
-                        10,
-                        now_value,
-                        now_value,
-                    ),
-                )
+            templates = self._load_active_templates(connection)
+            self._insert_default_kits_for_truck(
+                connection,
+                truck_id=truck_id,
+                templates=templates,
+                now_value=now_value,
+            )
 
             connection.commit()
         return truck_id
@@ -175,14 +194,7 @@ class FabricationDatabase:
                 if str(row["truck_number"]).strip()
             }
             max_build_order = max((int(row["build_order"] or 0) for row in existing_rows), default=0)
-            templates = connection.execute(
-                """
-                SELECT id, kit_name, kit_order, is_main_kit
-                FROM KitTemplate
-                WHERE is_active = 1
-                ORDER BY kit_order, id
-                """
-            ).fetchall()
+            templates = self._load_active_templates(connection)
 
             for row in rows:
                 truck_number = str(row.get("truck_number") or "").strip()
@@ -250,47 +262,12 @@ class FabricationDatabase:
                 )
                 truck_id = int(truck_cursor.lastrowid)
 
-                for template in templates:
-                    connection.execute(
-                        """
-                        INSERT INTO TruckKit (
-                            truck_id,
-                            kit_template_id,
-                            parent_kit_id,
-                            kit_name,
-                            kit_order,
-                            is_main_kit,
-                            release_state,
-                            released_at,
-                            blocked,
-                            blocked_reason,
-                        front_stage_id,
-                        back_stage_id,
-                        front_position,
-                        back_position,
-                        keep_tail_at_head,
-                        blocker,
-                        pdf_links,
-                        is_active,
-                        created_at,
-                        updated_at
-                    )
-                        VALUES (?, ?, NULL, ?, ?, ?, 'not_released', '', 0, '', ?, ?, ?, ?, 1, '', '', 1, ?, ?)
-                        """,
-                        (
-                            truck_id,
-                            int(template["id"]),
-                            template["kit_name"],
-                            int(template["kit_order"]),
-                            int(template["is_main_kit"]),
-                            int(Stage.RELEASE),
-                            int(Stage.RELEASE),
-                            10,
-                            10,
-                            now_value,
-                            now_value,
-                        ),
-                    )
+                self._insert_default_kits_for_truck(
+                    connection,
+                    truck_id=truck_id,
+                    templates=templates,
+                    now_value=now_value,
+                )
 
                 created_count += 1
 
@@ -491,21 +468,7 @@ class FabricationDatabase:
                 """
             ).fetchall()
 
-            trucks: list[Truck] = [
-                Truck(
-                    id=int(row["id"]),
-                    truck_number=row["truck_number"],
-                    client=row["client"] or "",
-                    notes=row["notes"],
-                    is_visible=bool(row["is_visible"]),
-                    build_order=int(row["build_order"] or 0),
-                    planned_start_date=row["planned_start_date"] or "",
-                    created_at=row["created_at"],
-                    updated_at=row["updated_at"],
-                    kits=[],
-                )
-                for row in truck_rows
-            ]
+            trucks: list[Truck] = [self._row_to_truck(row) for row in truck_rows]
 
             by_truck_id = {truck.id: truck for truck in trucks if truck.id is not None}
             where_clause = "WHERE is_active = 1" if active_only else ""
@@ -547,6 +510,55 @@ class FabricationDatabase:
             truck.kits.append(self._row_to_kit(row))
 
         return trucks
+
+    def load_truck_with_kits(self, truck_id: int, active_only: bool = True) -> Truck | None:
+        with self._connect() as connection:
+            truck_row = connection.execute(
+                """
+                SELECT id, truck_number, client, notes, is_visible, build_order, planned_start_date, created_at, updated_at
+                FROM Truck
+                WHERE id = ?
+                """,
+                (int(truck_id),),
+            ).fetchone()
+            if not truck_row:
+                return None
+
+            truck = self._row_to_truck(truck_row)
+            where_clause = "AND is_active = 1" if active_only else ""
+            kit_rows = connection.execute(
+                f"""
+                SELECT
+                    id,
+                    truck_id,
+                    kit_template_id,
+                    parent_kit_id,
+                    kit_name,
+                    kit_order,
+                    is_main_kit,
+                    release_state,
+                    released_at,
+                    blocked,
+                    blocked_reason,
+                    front_stage_id,
+                    back_stage_id,
+                    front_position,
+                    back_position,
+                    keep_tail_at_head,
+                    blocker,
+                    pdf_links,
+                    is_active,
+                    created_at,
+                    updated_at
+                FROM TruckKit
+                WHERE truck_id = ? {where_clause}
+                ORDER BY kit_order, id
+                """,
+                (int(truck_id),),
+            ).fetchall()
+
+        truck.kits = [self._row_to_kit(row) for row in kit_rows]
+        return truck
 
     def _schema_is_current(self, connection: sqlite3.Connection) -> bool:
         table_rows = connection.execute(
@@ -952,13 +964,11 @@ class FabricationDatabase:
         blocked_reason: str | None,
         blocker: str | None,
     ) -> tuple[bool, str]:
-        blocker_text = str(blocker or "").strip()
-        reason_text = str(blocked_reason or "").strip()
-        normalized_blocked = bool(blocked) if blocked is not None else bool(reason_text or blocker_text)
-        if not normalized_blocked:
-            return (False, "")
-        normalized_reason = reason_text or blocker_text or "Blocked"
-        return (True, normalized_reason)
+        return normalize_blocked_state(
+            blocked=blocked,
+            blocked_reason=blocked_reason,
+            blocker=blocker,
+        )
 
     @staticmethod
     def _normalize_position_value(value: int | None) -> int | None:
@@ -1044,6 +1054,21 @@ class FabricationDatabase:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
+
+    @staticmethod
+    def _row_to_truck(row: sqlite3.Row) -> Truck:
+        return Truck(
+            id=int(row["id"]),
+            truck_number=row["truck_number"],
+            client=row["client"] or "",
+            notes=row["notes"],
+            is_visible=bool(row["is_visible"]),
+            build_order=int(row["build_order"] or 0),
+            planned_start_date=row["planned_start_date"] or "",
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            kits=[],
+        )
 
     @classmethod
     def _row_to_kit(cls, row: sqlite3.Row) -> TruckKit:
