@@ -12,7 +12,7 @@ from pathlib import Path
 import time
 
 from PySide6.QtCore import QDate, Qt, QTimer
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSplitter,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -44,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from board_widget import BoardWidget
+from branding import make_angled_logo_texture_pixmap, make_tiled_banner_pixmap
 from dashboard_attention import build_dashboard_attention_lines
 from dashboard_helpers import is_truck_complete, signal_state_for_level, sort_trucks_natural
 from dashboard_publish import (
@@ -66,7 +68,7 @@ from metrics import (
     DashboardMetrics,
     compute_dashboard_metrics,
 )
-from models import RELEASE_STATES, Truck, TruckKit, first_pdf_link
+from models import RELEASE_STATES, Truck, TruckKit, pdf_link
 from schedule import ScheduleInsights, build_schedule_insights
 from stages import (
     FABRICATION_STAGE_POSITION_SCALE,
@@ -114,7 +116,7 @@ class WrappingListWidget(QListWidget):
         label = QLabel(text)
         label.setWordWrap(True)
         label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        label.setStyleSheet(f"padding: 6px 8px; color: {color};")
+        label.setStyleSheet(f"padding: 6px 8px; color: {color}; background: transparent;")
         self.addItem(item)
         self.setItemWidget(item, label)
 
@@ -183,7 +185,7 @@ class KitEditDialog(QDialog):
         self._keep_tail_synced_checkbox.toggled.connect(self._on_keep_tail_synced_toggled)
 
         self._blocker_input = QLineEdit(kit.blocker)
-        self._pdf_links_input = QLineEdit(first_pdf_link(kit.pdf_links))
+        self._pdf_links_input = QLineEdit(pdf_link(kit.pdf_links))
         self._pdf_links_input.setPlaceholderText("Single PDF path or URL")
         position_controls = self._build_position_controls()
 
@@ -432,7 +434,7 @@ class KitEditDialog(QDialog):
         combo.setCurrentIndex(index)
 
     def _normalized_pdf_link(self) -> str:
-        return first_pdf_link(self._pdf_links_input.text())
+        return pdf_link(self._pdf_links_input.text())
 
     def _open_pdf_link(self) -> None:
         link = self._normalized_pdf_link()
@@ -799,6 +801,60 @@ class TruckPlanDialog(QDialog):
         return updates
 
 
+class WatermarkPanel(QFrame):
+    def __init__(self, logo_path: Path | None, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._logo_path = logo_path
+        self._background_color = QColor("#F8FAFC")
+        self._border_color = QColor("#D5DEE7")
+        self._watermark_texture = QPixmap()
+        self._dark_mode = False
+        self._corner_radius = 8.0
+
+    def set_watermark_theme(self, *, background_color: str, border_color: str, dark_mode: bool) -> None:
+        self._background_color = QColor(background_color)
+        self._border_color = QColor(border_color)
+        self._dark_mode = bool(dark_mode)
+        self._rebuild_watermark_texture()
+        self.update()
+
+    def resizeEvent(self, event):  # type: ignore[override]
+        self._rebuild_watermark_texture()
+        super().resizeEvent(event)
+
+    def paintEvent(self, event):  # type: ignore[override]
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = self.rect().adjusted(0, 0, -1, -1)
+        path = QPainterPath()
+        path.addRoundedRect(float(rect.x()), float(rect.y()), float(rect.width()), float(rect.height()), self._corner_radius, self._corner_radius)
+        painter.fillPath(path, self._background_color)
+        if not self._watermark_texture.isNull():
+            painter.save()
+            painter.setClipPath(path)
+            x = rect.x() + max(0, (rect.width() - self._watermark_texture.width()) // 2)
+            y = rect.y() + max(0, (rect.height() - self._watermark_texture.height()) // 2)
+            painter.drawPixmap(x, y, self._watermark_texture)
+            painter.restore()
+        painter.setPen(QPen(self._border_color, 1))
+        painter.drawPath(path)
+        super().paintEvent(event)
+
+    def _rebuild_watermark_texture(self) -> None:
+        texture_width = max(240, self.width() - 28)
+        texture_height = max(180, self.height() - 28)
+        stripe_height = 68 if self._dark_mode else 62
+        opacity = 0.16 if self._dark_mode else 0.18
+        self._watermark_texture = make_angled_logo_texture_pixmap(
+            self._logo_path,
+            tile_width_px=texture_width,
+            tile_height_px=texture_height,
+            stripe_height_px=stripe_height,
+            opacity=opacity,
+            background_color=None,
+        )
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -816,6 +872,8 @@ class MainWindow(QMainWindow):
         self._dashboard_metrics: DashboardMetrics | None = None
         self._kit_stage_windows_by_truck: dict[tuple[int, str, int], tuple[float, float]] = {}
         self._minority_report_mode = False
+        self._runtime_dir = runtime_dir if runtime_dir is not None else Path(__file__).resolve().parent
+        self._company_logo_path = self._runtime_dir / "bs-logo.png"
         self._hot_reload_enabled = hot_reload_active
         self._hot_reload_request_id: str = ""
         self._hot_reload_canceled_request_id: str = ""
@@ -993,6 +1051,21 @@ class MainWindow(QMainWindow):
         except OSError:
             return
 
+    def _build_logo_banner(self) -> QLabel:
+        logo_banner = QLabel("")
+        logo_banner.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        logo_banner.setFixedHeight(36)
+        logo_banner.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        logo_banner.setMinimumWidth(320)
+        tiled = make_tiled_banner_pixmap(self._company_logo_path, height_px=28, width_px=2600)
+        if not tiled.isNull():
+            logo_banner.setPixmap(tiled)
+            logo_banner.setStyleSheet("QLabel { border: none; background: transparent; }")
+            logo_banner.setVisible(True)
+        else:
+            logo_banner.setVisible(False)
+        return logo_banner
+
     def _build_dashboard_view(self) -> QWidget:
         view = QWidget()
         layout = QVBoxLayout(view)
@@ -1015,12 +1088,20 @@ class MainWindow(QMainWindow):
         )
         self._minority_report_checkbox.toggled.connect(self._on_minority_report_toggled)
         controls.addWidget(self._minority_report_checkbox)
-        controls.addStretch(1)
+        self._logo_banner_label = self._build_logo_banner()
+        logo_slot = QWidget()
+        logo_slot_layout = QHBoxLayout(logo_slot)
+        logo_slot_layout.setContentsMargins(0, 0, 0, 0)
+        logo_slot_layout.addStretch(1)
+        logo_slot_layout.addWidget(self._logo_banner_label, 0, Qt.AlignHCenter | Qt.AlignVCenter)
+        logo_slot_layout.addStretch(1)
+        controls.addWidget(logo_slot, 1)
 
         self._status_label = QLabel("")
-        self._status_label.setWordWrap(True)
+        self._status_label.setWordWrap(False)
+        self._status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self._status_label.setStyleSheet("color: #475569;")
-        controls.addWidget(self._status_label)
+        controls.addWidget(self._status_label, 0, Qt.AlignRight | Qt.AlignVCenter)
         layout.addLayout(controls)
 
         self._health_strip = self._build_health_strip()
@@ -1156,16 +1237,21 @@ class MainWindow(QMainWindow):
             self._board_widget.set_dark_mode(dark)
 
         if hasattr(self, "_attention_panel"):
-            self._attention_panel.setStyleSheet(panel_style)
+            self._attention_panel.set_watermark_theme(
+                background_color=panel_bg,
+                border_color=panel_border,
+                dark_mode=dark,
+            )
         if hasattr(self, "_attention_title_label"):
             self._attention_title_label.setStyleSheet(
-                f"font-size: 16px; font-weight: 700; color: {title_color};"
+                f"background: transparent; font-size: 16px; font-weight: 700; color: {title_color};"
             )
         if hasattr(self, "_attention_list"):
+            attention_list_bg = "rgba(3, 13, 25, 168)" if dark else "rgba(255, 255, 255, 176)"
             self._attention_list.setStyleSheet(
                 f"""
                 QListWidget {{
-                    background: {list_bg};
+                    background: {attention_list_bg};
                     border: 1px solid {list_border};
                     border-radius: 6px;
                 }}
@@ -1345,6 +1431,7 @@ class MainWindow(QMainWindow):
             )
 
     def refresh_view(self) -> None:
+        self._invalidate_gantt_layout_cache()
         state = self._build_dashboard_view_state(load_active_dashboard_trucks(self.database))
         self._apply_dashboard_view_state(state)
 
@@ -1363,6 +1450,7 @@ class MainWindow(QMainWindow):
             refreshed_trucks.append(updated_truck)
 
         state = self._build_dashboard_view_state(refreshed_trucks)
+        self._invalidate_gantt_layout_cache()
         self._apply_dashboard_view_state(state)
 
     def _on_manage_truck_plan(self) -> None:
@@ -1492,31 +1580,25 @@ class MainWindow(QMainWindow):
         return strip
 
     def _build_attention_panel(self) -> QWidget:
-        panel = QFrame()
+        panel = WatermarkPanel(self._company_logo_path)
         self._attention_panel = panel
         panel.setFrameShape(QFrame.StyledPanel)
-        panel.setStyleSheet(
-            """
-            QFrame {
-                background-color: #F8FAFC;
-                border: 1px solid #D5DEE7;
-                border-radius: 8px;
-            }
-            """
-        )
+        panel.set_watermark_theme(background_color="#F8FAFC", border_color="#D5DEE7", dark_mode=False)
 
         layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
         title = QLabel("Attention")
         self._attention_title_label = title
         title.setWordWrap(True)
-        title.setStyleSheet("font-size: 16px; font-weight: 700; color: #0F172A;")
+        title.setStyleSheet("background: transparent; font-size: 16px; font-weight: 700; color: #0F172A;")
         layout.addWidget(title)
 
         self._attention_list = WrappingListWidget()
         self._attention_list.setStyleSheet(
             """
             QListWidget {
-                background: #FFFFFF;
+                background: rgba(255, 255, 255, 176);
                 border: 1px solid #CBD5E1;
                 border-radius: 6px;
             }
@@ -2026,6 +2108,19 @@ class MainWindow(QMainWindow):
             bool(dark_mode),
         )
 
+    def _invalidate_gantt_layout_cache(self) -> None:
+        self._gantt_autosize_signature = None
+        self._gantt_locked_signature = None
+        self._gantt_locked_total_width = -1
+        self._gantt_locked_total_height = -1
+        self._gantt_locked_left_width = 0
+        self._gantt_locked_height = 0
+        for context in getattr(self, "_gantt_contexts", {}).values():
+            if not isinstance(context, dict):
+                continue
+            context.pop("render_signature", None)
+            context.pop("source_pixmap", None)
+
     def _populate_gantt_context(
         self,
         *,
@@ -2158,6 +2253,7 @@ class MainWindow(QMainWindow):
             current_week=current_week,
             forward_horizon_weeks=8.0,
             side_padding_weeks=0.35,
+            extend_to_latest_due_week=False,
         )
         self._gantt_autosize_signature = (
             round(float(min_week), 4),
@@ -2193,19 +2289,29 @@ class MainWindow(QMainWindow):
             if context is None:
                 continue
             truck_rows = list(rows_by_truck_number.get(str(truck.truck_number or "").strip(), []))
+            truck_min_week = min_week
+            truck_max_week = max_week
+            if truck_rows:
+                truck_min_week, truck_max_week = compute_overlay_viewport(
+                    rows=truck_rows,
+                    current_week=current_week,
+                    forward_horizon_weeks=8.0,
+                    side_padding_weeks=0.35,
+                    extend_to_latest_due_week=False,
+                )
             self._populate_gantt_context(
                 context=context,
                 rows=truck_rows,
                 current_week=current_week,
-                min_week=min_week,
-                max_week=max_week,
+                min_week=truck_min_week,
+                max_week=truck_max_week,
                 is_per_truck=True,
                 empty_message=f"{truck.truck_number} has no gantt rows.",
                 render_signature=self._gantt_rows_render_signature(
                     rows=truck_rows,
                     current_week=current_week,
-                    min_week=min_week,
-                    max_week=max_week,
+                    min_week=truck_min_week,
+                    max_week=truck_max_week,
                     is_per_truck=True,
                     dark_mode=bool(self._minority_report_mode),
                 ),
@@ -2324,22 +2430,22 @@ class MainWindow(QMainWindow):
 
         palette = {
             "red": {
-                "active_fill": "#FF6B6B" if dark else "#DC2626",
-                "active_border": "#FFD1D1" if dark else "#991B1B",
-                "inactive_fill": "rgba(255, 107, 107, 0.28)" if dark else "rgba(220, 38, 38, 0.22)",
-                "inactive_border": "rgba(255, 209, 209, 0.65)" if dark else "rgba(153, 27, 27, 0.38)",
+                "active_fill": "#E60000",
+                "active_border": "#FFB3B3" if dark else "#990000",
+                "inactive_fill": "rgba(230, 0, 0, 0.28)" if dark else "rgba(230, 0, 0, 0.22)",
+                "inactive_border": "rgba(255, 179, 179, 0.65)" if dark else "rgba(153, 0, 0, 0.38)",
             },
             "yellow": {
-                "active_fill": "#FFD166" if dark else "#F59E0B",
-                "active_border": "#FFE7A3" if dark else "#B45309",
-                "inactive_fill": "rgba(255, 209, 102, 0.28)" if dark else "rgba(245, 158, 11, 0.22)",
-                "inactive_border": "rgba(255, 231, 163, 0.7)" if dark else "rgba(180, 83, 9, 0.38)",
+                "active_fill": "#FF7800",
+                "active_border": "#FFD1A6" if dark else "#A64E00",
+                "inactive_fill": "rgba(255, 120, 0, 0.28)" if dark else "rgba(255, 120, 0, 0.22)",
+                "inactive_border": "rgba(255, 209, 166, 0.7)" if dark else "rgba(166, 78, 0, 0.38)",
             },
             "green": {
-                "active_fill": "#6DFFB0" if dark else "#16A34A",
-                "active_border": "#C8FFE0" if dark else "#166534",
-                "inactive_fill": "rgba(109, 255, 176, 0.28)" if dark else "rgba(22, 163, 74, 0.22)",
-                "inactive_border": "rgba(200, 255, 224, 0.7)" if dark else "rgba(22, 101, 52, 0.38)",
+                "active_fill": "#4CBB17",
+                "active_border": "#D3F0C2" if dark else "#2F740E",
+                "inactive_fill": "rgba(76, 187, 23, 0.28)" if dark else "rgba(76, 187, 23, 0.22)",
+                "inactive_border": "rgba(211, 240, 194, 0.7)" if dark else "rgba(47, 116, 14, 0.38)",
             },
         }
 

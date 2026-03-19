@@ -74,7 +74,7 @@ def canonicalize_kit_name(value: str) -> str:
     return KIT_NAME_CANONICAL_BY_LOWER.get(text.lower(), text)
 
 
-def first_pdf_link(raw_text: str) -> str:
+def pdf_link(raw_text: str) -> str:
     for part in str(raw_text).replace(";", "\n").splitlines():
         clean = part.strip().strip('"')
         if clean:

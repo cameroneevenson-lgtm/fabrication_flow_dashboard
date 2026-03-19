@@ -24,7 +24,7 @@ from gantt_overlay import (
     normalize_position_span,
     overlay_position_to_week,
 )
-from models import Truck, TruckKit, first_pdf_link
+from models import Truck, TruckKit, pdf_link
 from stages import STAGE_SEQUENCE, Stage, stage_from_id, stage_label
 
 TRUCK_COL_WIDTH = 200
@@ -101,7 +101,7 @@ def _kit_render_signature(
         int(kit.back_position),
         bool(getattr(kit, "keep_tail_at_head", True)),
         str(kit.blocker or "").strip(),
-        first_pdf_link(getattr(kit, "pdf_links", "")),
+        pdf_link(getattr(kit, "pdf_links", "")),
         hold_weeks,
         _kit_window_signature(
             truck_id=truck_id,
@@ -363,7 +363,7 @@ class KitCard(QFrame):
             self.clicked.emit(int(self._kit.id))
 
     def _open_pdf_link(self) -> None:
-        link = first_pdf_link(self._kit.pdf_links)
+        link = pdf_link(self._kit.pdf_links)
         if not link or not hasattr(os, "startfile"):
             return
         try:
@@ -909,7 +909,7 @@ class BoardWidget(QWidget):
             }}
             """
         )
-        self._content_widget.setStyleSheet("background: transparent;")
+        self._content_widget.setStyleSheet("background: transparent; border: none;")
         for label in self.findChildren(QLabel, "board_empty_state"):
             label.setStyleSheet(f"padding: 20px; color: {empty_color};")
 

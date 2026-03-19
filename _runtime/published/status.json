@@ -1,20 +1,20 @@
 {
-  "published_at_utc": "2026-03-18T21:48:03+00:00",
+  "published_at_utc": "2026-03-19T13:46:57+00:00",
   "summary": {
     "active_trucks": 4,
     "laser": "low",
     "bend_buffer": "healthy",
-    "weld_feed_a": "watch",
+    "weld_feed_a": "low",
     "weld_feed_b": "healthy",
     "kits_behind_schedule": 4,
-    "late_releases": 2,
+    "late_releases": 3,
     "blocked_kits": 1
   },
   "risk_summary": [
     {
       "priority": 96,
       "title": "Engineering release is holding work start",
-      "detail": "2 kit(s) past planned start; oldest 3 weeks late (F55334 Console)."
+      "detail": "3 kit(s) past planned start; oldest 3 weeks late (F55334 Console)."
     }
   ],
   "truck_rows": [
@@ -39,7 +39,7 @@
       "main_stage": "Release",
       "sync_state": "Behind",
       "risk_category": "Late Release",
-      "issue_summary": "1 kit(s) late release.",
+      "issue_summary": "2 kit(s) late release.",
       "tone": "problem"
     },
     {
