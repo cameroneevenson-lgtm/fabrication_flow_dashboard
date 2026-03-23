@@ -64,6 +64,7 @@ from gantt_overlay import (
     normalize_overlay_row_labels,
     render_overlay_png,
 )
+from iso_board_widget import IsoBoardWidget
 from metrics import (
     DashboardMetrics,
     compute_dashboard_metrics,
@@ -1110,6 +1111,8 @@ class MainWindow(QMainWindow):
         self._board_widget = BoardWidget()
         self._board_widget.kit_selected.connect(self._on_kit_selected)
         self._board_widget.kit_stage_drop_requested.connect(self._on_kit_stage_drop_requested)
+        self._iso_board_widget = IsoBoardWidget()
+        self._iso_board_widget.kit_focused.connect(self._on_iso_kit_focused)
 
         right_column = QWidget()
         right_column_layout = QVBoxLayout(right_column)
@@ -1140,8 +1143,21 @@ class MainWindow(QMainWindow):
         self._main_splitter = main_splitter
         self._right_column = right_column
 
-        layout.addWidget(main_splitter, 1)
+        self._flow_tabs = QTabWidget()
+        self._flow_tabs.addTab(main_splitter, "Dashboard")
+        self._flow_tabs.addTab(self._build_3d_flow_panel(), "3D Flow")
+
+        layout.addWidget(self._flow_tabs, 1)
         return view
+
+    def _build_3d_flow_panel(self) -> QWidget:
+        panel = QFrame()
+        self._iso_board_panel = panel
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        panel_layout.setSpacing(0)
+        panel_layout.addWidget(self._iso_board_widget, 1)
+        return panel
 
     def _on_minority_report_toggled(self, checked: bool) -> None:
         self._minority_report_mode = bool(checked)
@@ -1235,6 +1251,39 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "_board_widget"):
             self._board_widget.set_dark_mode(dark)
+        if hasattr(self, "_iso_board_widget"):
+            self._iso_board_widget.set_dark_mode(dark)
+
+        if hasattr(self, "_flow_tabs"):
+            tab_bg = panel_bg if dark else "#E2E8F0"
+            selected_tab_bg = list_bg
+            self._flow_tabs.setStyleSheet(
+                f"""
+                QTabWidget::pane {{
+                    border: 0;
+                    top: -1px;
+                }}
+                QTabBar::tab {{
+                    background: {tab_bg};
+                    color: {muted_color};
+                    border: 1px solid {panel_border};
+                    border-bottom: none;
+                    border-top-left-radius: 8px;
+                    border-top-right-radius: 8px;
+                    padding: 7px 14px;
+                    margin-right: 3px;
+                }}
+                QTabBar::tab:selected {{
+                    background: {selected_tab_bg};
+                    color: {title_color};
+                }}
+                QTabBar::tab:hover {{
+                    color: {text_color};
+                }}
+                """
+            )
+        if hasattr(self, "_iso_board_panel"):
+            self._iso_board_panel.setStyleSheet(panel_style)
 
         if hasattr(self, "_attention_panel"):
             self._attention_panel.set_watermark_theme(
@@ -1386,6 +1435,23 @@ class MainWindow(QMainWindow):
             kit_stage_windows_by_truck=kit_stage_windows_by_truck,
         )
 
+    def _build_operational_overlay_rows(self) -> list[OverlayRow]:
+        if self._schedule_insights is None:
+            return []
+        rows = build_overlay_rows(
+            trucks=list(self._trucks),
+            schedule_insights=self._schedule_insights,
+            max_rows=max(1, len(self._trucks) * 8),
+        )
+        parsed_labels = [str(row.row_label or "").split(" | ", 1) for row in rows]
+        shared_truck_width = max((len(parts[0].rstrip()) for parts in parsed_labels if parts), default=0)
+        shared_kit_width = max((len(parts[1].rstrip()) for parts in parsed_labels if len(parts) > 1), default=0)
+        return normalize_overlay_row_labels(
+            rows,
+            truck_width=shared_truck_width,
+            kit_width=shared_kit_width,
+        )
+
     @contextmanager
     def _batch_dashboard_ui_updates(self):
         # Suppress intermediate repaints while multiple dashboard surfaces are updated together.
@@ -1393,6 +1459,7 @@ class MainWindow(QMainWindow):
         for candidate in (
             self,
             getattr(self, "_board_widget", None),
+            getattr(self, "_iso_board_widget", None),
             getattr(self, "_attention_list", None),
             getattr(self, "_gantt_tabs", None),
         ):
@@ -1412,6 +1479,7 @@ class MainWindow(QMainWindow):
         self._schedule_insights = state.schedule_insights
         self._dashboard_metrics = state.dashboard_metrics
         self._kit_stage_windows_by_truck = dict(state.kit_stage_windows_by_truck)
+        overlay_rows = self._build_operational_overlay_rows()
 
         with self._batch_dashboard_ui_updates():
             self._board_widget.set_data(
@@ -1420,9 +1488,15 @@ class MainWindow(QMainWindow):
                 self._schedule_insights.current_week,
                 self._kit_stage_windows_by_truck,
             )
+            self._iso_board_widget.set_data(
+                self._trucks,
+                self._schedule_insights.current_week,
+                self._kit_stage_windows_by_truck,
+                overlay_rows=overlay_rows,
+            )
             self._update_health_strip(self._dashboard_metrics)
             self._update_attention_panel(self._dashboard_metrics)
-            self._update_gantt_panel()
+            self._update_gantt_panel(rows=overlay_rows)
 
             hold_count = len(self._schedule_insights.release_hold_items)
             self._status_label.setText(
@@ -1559,6 +1633,16 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Moved {truck.truck_number} {kit.kit_name} to {stage_label(target_stage)}",
             3000,
+        )
+
+    def _on_iso_kit_focused(self, kit_id: int) -> None:
+        result = self._kit_index.get(int(kit_id))
+        if not result:
+            return
+        truck, kit = result
+        self.statusBar().showMessage(
+            f"3D Flow selected {truck.truck_number} {kit.kit_name} - {stage_label(kit.front_stage_id)}",
+            4000,
         )
 
     def _build_health_strip(self) -> QWidget:
@@ -2224,7 +2308,7 @@ class MainWindow(QMainWindow):
         if render_signature is not None:
             context["render_signature"] = render_signature
 
-    def _update_gantt_panel(self) -> None:
+    def _update_gantt_panel(self, rows: list[OverlayRow] | None = None) -> None:
         if not hasattr(self, "_gantt_context") or self._schedule_insights is None:
             return
 
@@ -2235,19 +2319,7 @@ class MainWindow(QMainWindow):
         previous_total_width = int(getattr(self, "_gantt_locked_total_width", -1))
         previous_total_height = int(getattr(self, "_gantt_locked_total_height", -1))
 
-        rows = build_overlay_rows(
-            trucks=list(self._trucks),
-            schedule_insights=insights,
-            max_rows=max(1, len(self._trucks) * 8),
-        )
-        parsed_labels = [str(row.row_label or "").split(" | ", 1) for row in rows]
-        shared_truck_width = max((len(parts[0].rstrip()) for parts in parsed_labels if parts), default=0)
-        shared_kit_width = max((len(parts[1].rstrip()) for parts in parsed_labels if len(parts) > 1), default=0)
-        rows = normalize_overlay_row_labels(
-            rows,
-            truck_width=shared_truck_width,
-            kit_width=shared_kit_width,
-        )
+        rows = list(rows) if rows is not None else self._build_operational_overlay_rows()
         min_week, max_week = compute_overlay_viewport(
             rows=rows,
             current_week=current_week,
