@@ -47,6 +47,7 @@ A PySide6 application for tracking fabrication flow and schedule signals.
 - `truck_registry.py` - CSV parsing and sync orchestration
 - `main_window.py` - main dashboard UI and interactions
 - `board_widget.py` - stage board rendering and drag/drop
+- `iso_board_widget.py` - fixed-isometric 3D Flow board rendering and hit-testing
 - `database.py` - SQLite schema and persistence
 - `stages.py` - canonical `Stage` enum and metadata
 - `schedule.py` - schedule insights and release/concurrency calculations
@@ -56,6 +57,13 @@ A PySide6 application for tracking fabrication flow and schedule signals.
 - `export_ops_snapshot_teams_card.py` - export/post Teams webhook JSON payload
 - `truck_registry.csv` - truck registry input
 - `fabrication_flow.db` - local operational state
+
+## 3D Flow Board
+
+- The `3D Flow` tab is a fixed-camera isometric board on purpose. Keeping the camera fixed preserves a stable stage-by-row skyline for operational scanning and avoids introducing angle/orbit controls that would hide or distort schedule comparisons.
+- LASER, BEND, and WELD tower base heights come from the planned operation duration already defined in `schedule_config.json`: clamp raw planned weeks to `0.25..4.0`, then map that linearly into `28..120 px`.
+- The 3D board mirrors the gantt overlay row set rather than inventing a second filter. Only productive fabrication stages are shown, and rows/stages whose planned start is two weeks out or later are cropped from the isometric view to keep the near-term skyline readable.
+- Active fabrication progress is shown as a fill level inside the full planned-height tower instead of shortening the tower itself.
 
 ## Technical specification
 
