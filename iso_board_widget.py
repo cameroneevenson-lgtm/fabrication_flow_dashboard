@@ -11,36 +11,49 @@ from dashboard_helpers import normalize_blocked_state_from_kit
 from gantt_overlay import (
     LASER_START_POSITION,
     OverlayRow,
-    STATUS_COLORS,
     classify_front_status,
     expected_position_for_week,
     normalize_position_span,
     overlay_position_to_week,
 )
+from metrics import WELD_FEED_B_KIT_NAMES
 from models import Truck, TruckKit, pdf_link
 from stages import (
     FABRICATION_STAGE_POSITION_SCALE,
     FABRICATION_STAGES,
     Stage,
     stage_from_id,
-    stage_label,
 )
 
 NEUTRAL_TOWER_COLOR = "#94A3B8"
 COMPLETE_TILE_COLOR = "#64748B"
 OUTLINE_COLOR = "#0F172A"
-DISPLAY_STAGES: tuple[Stage, ...] = FABRICATION_STAGES
+
+
+@dataclass(frozen=True)
+class DisplayLane:
+    key: str
+    label: str
+    stage: Stage
+
+
+DISPLAY_LANES: tuple[DisplayLane, ...] = (
+    DisplayLane(key="laser", label="LASER", stage=Stage.LASER),
+    DisplayLane(key="bend", label="BEND", stage=Stage.BEND),
+    DisplayLane(key="weld_a", label="WELD A", stage=Stage.WELD),
+    DisplayLane(key="weld_b", label="WELD B", stage=Stage.WELD),
+)
 
 TILE_WIDTH = 84.0
 TILE_DEPTH = 40.0
-COLUMN_DX = 132.0
+COLUMN_DX = 190.0
 COLUMN_DY = 18.0
-ROW_DX = 30.0
+ROW_DX = 74.0
 ROW_DY = 56.0
 
-LEFT_MARGIN = 250.0
+LEFT_MARGIN = 96.0
 TOP_MARGIN = 150.0
-RIGHT_MARGIN = 180.0
+RIGHT_MARGIN = 120.0
 BOTTOM_MARGIN = 140.0
 
 RELEASE_STUB_HEIGHT = 14
@@ -73,6 +86,8 @@ class IsoBoardRow:
 class IsoBoardCell:
     row: IsoBoardRow
     stage: Stage
+    lane_key: str
+    lane_label: str
     stage_index: int
     raw_duration_weeks: float | None
     tower_height: int
@@ -88,7 +103,7 @@ class PaintedTower:
     cell: IsoBoardCell
     row_index: int
     kit_id: int
-    stage_id: int
+    lane_key: str
     base_center: QPointF
     top_polygon: QPolygonF
     left_polygon: QPolygonF
@@ -253,6 +268,34 @@ def _display_stage_for_current(current_stage: Stage) -> Stage:
     return current_stage
 
 
+def _is_weld_feed_b_kit(kit: TruckKit) -> bool:
+    normalized = _normalize_kit_name(getattr(kit, "kit_name", ""))
+    aliases = {normalized}
+    if normalized.endswith(" pack"):
+        aliases.add(normalized[:-5].strip())
+    return any(alias in WELD_FEED_B_KIT_NAMES for alias in aliases)
+
+
+def _weld_lane_key_for_kit(kit: TruckKit) -> str:
+    return "weld_b" if _is_weld_feed_b_kit(kit) else "weld_a"
+
+
+def _current_lane_key_for_kit(kit: TruckKit) -> str:
+    current_stage = _display_stage_for_current(stage_from_id(kit.front_stage_id))
+    if current_stage == Stage.WELD:
+        return _weld_lane_key_for_kit(kit)
+    if current_stage == Stage.BEND:
+        return "bend"
+    return "laser"
+
+
+def _is_released_for_iso(kit: TruckKit) -> bool:
+    return bool(
+        str(getattr(kit, "release_state", "") or "").strip().lower() == "released"
+        or stage_from_id(getattr(kit, "front_stage_id", int(Stage.RELEASE))) > Stage.RELEASE
+    )
+
+
 def _cell_fill_color(row: IsoBoardRow, stage: Stage) -> str:
     if _display_stage_for_current(row.current_stage) == stage:
         return row.status_color
@@ -261,7 +304,12 @@ def _cell_fill_color(row: IsoBoardRow, stage: Stage) -> str:
 
 def _stage_diagonal_offset(stage_index: int) -> float:
     # Mirror the stage axis so earlier time sits lower-left and later time rises up-right.
-    return float((len(DISPLAY_STAGES) - 1) - int(stage_index)) * COLUMN_DY
+    return float((len(DISPLAY_LANES) - 1) - int(stage_index)) * COLUMN_DY
+
+
+def _row_horizontal_offset(row_index: int, row_count: int) -> float:
+    # Mirror the board horizontally so the row stack fans down-left instead of down-right.
+    return float(max(0, row_count - 1 - int(row_index))) * ROW_DX
 
 
 class IsoBoardCanvas(QWidget):
@@ -274,7 +322,7 @@ class IsoBoardCanvas(QWidget):
         self._content_size = QSize(900, 520)
         self._max_tower_height = MAX_TOWER_HEIGHT
         self._selected_kit_id = -1
-        self._hovered_key: tuple[int, int] | None = None
+        self._hovered_key: tuple[int, str] | None = None
         self._dark_mode = False
 
         self.setMouseTracking(True)
@@ -335,6 +383,8 @@ class IsoBoardCanvas(QWidget):
                 continue
             active_kits = [kit for kit in sorted(truck.kits, key=lambda value: value.kit_order) if kit.is_active]
             for kit in active_kits:
+                if not _is_released_for_iso(kit):
+                    continue
                 stage_windows: dict[Stage, tuple[float, float]] = {}
                 for stage in FABRICATION_STAGES:
                     bounds = stage_windows_map.get((truck_id, _normalize_kit_name(kit.kit_name), int(stage)))
@@ -387,6 +437,8 @@ class IsoBoardCanvas(QWidget):
 
         rows: list[IsoBoardRow] = []
         for overlay_row in overlay_rows:
+            if not bool(getattr(overlay_row, "released", False)):
+                continue
             truck_number, kit_name = self._parse_overlay_label(overlay_row.row_label)
             match = kit_lookup.get((truck_number, _normalize_kit_name(kit_name)))
             if match is None:
@@ -396,7 +448,7 @@ class IsoBoardCanvas(QWidget):
                 {
                     stage: (float(bounds[0]), float(bounds[1]))
                     for stage, bounds in overlay_row.windows.items()
-                    if stage in DISPLAY_STAGES
+                    if stage in FABRICATION_STAGES
                 },
                 current_week=current_week,
             )
@@ -446,22 +498,22 @@ class IsoBoardCanvas(QWidget):
     def _rebuild_geometry(self) -> None:
         towers: list[PaintedTower] = []
         max_height = COMPLETE_SLAB_HEIGHT
+        row_count = max(len(self._rows), 1)
         for row in self._rows:
-            for stage_index, stage in enumerate(DISPLAY_STAGES):
-                cell = self._build_cell(row=row, stage=stage, stage_index=stage_index)
+            for stage_index, lane in enumerate(DISPLAY_LANES):
+                cell = self._build_cell(row=row, lane=lane, stage_index=stage_index)
                 if cell is None:
                     continue
                 center = QPointF(
-                    LEFT_MARGIN + (stage_index * COLUMN_DX) + (row.row_index * ROW_DX),
+                    LEFT_MARGIN + (stage_index * COLUMN_DX) + _row_horizontal_offset(row.row_index, row_count),
                     TOP_MARGIN + _stage_diagonal_offset(stage_index) + (row.row_index * ROW_DY),
                 )
                 towers.append(self._build_painted_tower(cell=cell, center=center))
                 max_height = max(max_height, cell.tower_height)
 
         towers.sort(key=lambda item: (item.base_center.y(), item.base_center.x()))
-        row_count = max(len(self._rows), 1)
-        width = int(round(LEFT_MARGIN + ((len(DISPLAY_STAGES) - 1) * COLUMN_DX) + ((row_count - 1) * ROW_DX) + TILE_WIDTH + RIGHT_MARGIN))
-        height = int(round(TOP_MARGIN + max_height + ((len(DISPLAY_STAGES) - 1) * COLUMN_DY) + ((row_count - 1) * ROW_DY) + TILE_DEPTH + BOTTOM_MARGIN))
+        width = int(round(LEFT_MARGIN + ((len(DISPLAY_LANES) - 1) * COLUMN_DX) + ((row_count - 1) * ROW_DX) + TILE_WIDTH + RIGHT_MARGIN))
+        height = int(round(TOP_MARGIN + max_height + ((len(DISPLAY_LANES) - 1) * COLUMN_DY) + ((row_count - 1) * ROW_DY) + TILE_DEPTH + BOTTOM_MARGIN))
 
         self._painted_towers = towers
         self._max_tower_height = max_height
@@ -476,16 +528,21 @@ class IsoBoardCanvas(QWidget):
         self,
         *,
         row: IsoBoardRow,
-        stage: Stage,
+        lane: DisplayLane,
         stage_index: int,
     ) -> IsoBoardCell | None:
+        stage = lane.stage
+        if stage == Stage.WELD and lane.key != _weld_lane_key_for_kit(row.kit):
+            return None
+
         raw_duration_weeks: float | None = None
         tower_height = 0
         progress_ratio = 0.0
+        current_lane_key = _current_lane_key_for_kit(row.kit)
 
         bounds = row.stage_windows.get(stage)
         if bounds is None:
-            if _display_stage_for_current(row.current_stage) != stage:
+            if current_lane_key != lane.key:
                 return None
             tower_height = MISSING_WINDOW_TILE_HEIGHT
         else:
@@ -500,7 +557,7 @@ class IsoBoardCanvas(QWidget):
         tooltip_lines = [
             f"Truck: {row.truck_number}",
             f"Kit: {row.kit.kit_name}",
-            f"Stage: {stage_label(stage)}",
+            f"Stage: {lane.label}",
             f"Planned duration: {_format_duration_weeks(raw_duration_weeks)}",
             f"Status: {status_label}",
         ]
@@ -510,6 +567,8 @@ class IsoBoardCanvas(QWidget):
         return IsoBoardCell(
             row=row,
             stage=stage,
+            lane_key=lane.key,
+            lane_label=lane.label,
             stage_index=stage_index,
             raw_duration_weeks=raw_duration_weeks,
             tower_height=tower_height,
@@ -517,7 +576,7 @@ class IsoBoardCanvas(QWidget):
             fill_color=_cell_fill_color(row, stage),
             tooltip_text="\n".join(tooltip_lines),
             pdf_target=pdf_link(getattr(row.kit, "pdf_links", "")),
-            is_current_stage=_display_stage_for_current(row.current_stage) == stage,
+            is_current_stage=current_lane_key == lane.key,
         )
 
     def _build_painted_tower(self, *, cell: IsoBoardCell, center: QPointF) -> PaintedTower:
@@ -529,7 +588,7 @@ class IsoBoardCanvas(QWidget):
             cell=cell,
             row_index=cell.row.row_index,
             kit_id=int(cell.row.kit.id or -1),
-            stage_id=int(cell.stage),
+            lane_key=cell.lane_key,
             base_center=center,
             top_polygon=top_polygon,
             left_polygon=left_polygon,
@@ -543,9 +602,11 @@ class IsoBoardCanvas(QWidget):
         *,
         center: QPointF,
         height: float,
+        width: float = TILE_WIDTH,
+        depth: float = TILE_DEPTH,
     ) -> tuple[QPolygonF, QPolygonF, QPolygonF, QPainterPath, QRectF]:
-        half_width = TILE_WIDTH / 2.0
-        half_depth = TILE_DEPTH / 2.0
+        half_width = width / 2.0
+        half_depth = depth / 2.0
         x = float(center.x())
         y = float(center.y())
 
@@ -595,9 +656,7 @@ class IsoBoardCanvas(QWidget):
         for tower in self._painted_towers:
             self._paint_tower(painter, tower)
         painter.restore()
-        self._paint_tower_labels(painter, scale=scale, offset_x=offset_x, offset_y=offset_y)
         self._paint_stage_headers(painter, scale=scale, offset_x=offset_x, offset_y=offset_y)
-        self._paint_row_labels(painter, scale=scale, offset_x=offset_x, offset_y=offset_y)
 
     def _render_transform(self) -> tuple[float, float, float]:
         scene_width = max(1.0, float(self._content_size.width()))
@@ -655,9 +714,10 @@ class IsoBoardCanvas(QWidget):
 
     def _paint_stage_headers(self, painter: QPainter, *, scale: float, offset_x: float, offset_y: float) -> None:
         painter.save()
-        for stage_index, stage in enumerate(DISPLAY_STAGES):
+        row_count = max(len(self._rows), 1)
+        for stage_index, lane in enumerate(DISPLAY_LANES):
             scene_center = QPointF(
-                LEFT_MARGIN + (stage_index * COLUMN_DX),
+                LEFT_MARGIN + (stage_index * COLUMN_DX) + _row_horizontal_offset(0, row_count),
                 TOP_MARGIN - self._max_tower_height - 52 + _stage_diagonal_offset(stage_index),
             )
             center = self._map_from_scene(scene_center, scale=scale, offset_x=offset_x, offset_y=offset_y)
@@ -674,51 +734,13 @@ class IsoBoardCanvas(QWidget):
             font.setBold(True)
             font.setPointSize(10)
             painter.setFont(font)
-            painter.drawText(rect, Qt.AlignCenter, stage_label(stage).upper())
-        painter.restore()
-
-    def _paint_row_labels(self, painter: QPainter, *, scale: float, offset_x: float, offset_y: float) -> None:
-        painter.save()
-        board_left_scene = LEFT_MARGIN - (TILE_WIDTH / 2.0) - 10.0
-        board_left = self._map_from_scene(
-            QPointF(board_left_scene, 0.0),
-            scale=scale,
-            offset_x=offset_x,
-            offset_y=offset_y,
-        ).x()
-        for row in self._rows:
-            scene_center = QPointF(0.0, TOP_MARGIN + (row.row_index * ROW_DY))
-            center_y = self._map_from_scene(scene_center, scale=scale, offset_x=offset_x, offset_y=offset_y).y()
-            label_left = 18.0
-            label_width = max(140.0, board_left - label_left - 18.0)
-            label_rect = QRectF(label_left, center_y - 16.0, label_width, 32.0)
-            is_selected = int(row.kit.id or -1) == self._selected_kit_id
-            if is_selected:
-                fill = QColor("#102437") if self._dark_mode else QColor("#E2E8F0")
-                border = QColor("#78D9FF") if self._dark_mode else QColor("#94A3B8")
-                painter.setPen(QPen(border, 1.0))
-                painter.setBrush(fill)
-                painter.drawRoundedRect(label_rect.adjusted(0.0, -2.0, 0.0, 2.0), 8.0, 8.0)
-
-            guide_pen = QPen(QColor(98, 130, 154, 120) if self._dark_mode else QColor(148, 163, 184, 120), 1.0)
-            painter.setPen(guide_pen)
-            painter.drawLine(
-                QPointF(label_rect.right() + 8.0, center_y),
-                QPointF(board_left, center_y),
-            )
-
-            truck_font = painter.font()
-            truck_font.setBold(True)
-            truck_font.setPointSize(10)
-            painter.setFont(truck_font)
-            painter.setPen(QColor("#D9EEFF") if self._dark_mode else QColor("#0F172A"))
-            painter.drawText(label_rect, Qt.AlignLeft | Qt.AlignVCenter, row.truck_number)
+            painter.drawText(rect, Qt.AlignCenter, lane.label)
         painter.restore()
 
     def _paint_tower(self, painter: QPainter, tower: PaintedTower) -> None:
         cell = tower.cell
         outline_width = 2.0 if cell.is_current_stage else 1.0
-        if tower.kit_id == self._selected_kit_id or self._hovered_key == (tower.kit_id, tower.stage_id):
+        if tower.kit_id == self._selected_kit_id or self._hovered_key == (tower.kit_id, tower.lane_key):
             outline_width = 2.4
 
         base_color = cell.fill_color
@@ -750,69 +772,43 @@ class IsoBoardCanvas(QWidget):
         painter.drawPolygon(tower.right_polygon)
         painter.setBrush(top_color)
         painter.drawPolygon(tower.top_polygon)
+
+        if cell.is_current_stage and cell.progress_ratio > 0.0:
+            filled_height = max(6.0, float(cell.tower_height) * max(0.0, min(1.0, float(cell.progress_ratio))))
+            fill_top, fill_left, fill_right, _fill_path, _fill_bounds = self._build_tower_geometry(
+                center=QPointF(tower.base_center.x(), tower.base_center.y() - 1.5),
+                height=filled_height,
+                width=max(18.0, TILE_WIDTH - 18.0),
+                depth=max(10.0, TILE_DEPTH - 10.0),
+            )
+            painter.setPen(Qt.NoPen)
+            fill_left_color = _darken(base_color, 0.06)
+            fill_left_color.setAlpha(132)
+            painter.setBrush(fill_left_color)
+            painter.drawPolygon(fill_left)
+            fill_right_color = _darken(base_color, 0.18)
+            fill_right_color.setAlpha(148)
+            painter.setBrush(fill_right_color)
+            painter.drawPolygon(fill_right)
+            fill_top_color = _lighten(base_color, 0.08)
+            fill_top_color.setAlpha(164)
+            painter.setBrush(fill_top_color)
+            painter.drawPolygon(fill_top)
+
         painter.setPen(QPen(outline_color, outline_width))
         painter.setBrush(Qt.NoBrush)
         painter.drawPolygon(tower.left_polygon)
         painter.drawPolygon(tower.right_polygon)
         painter.drawPolygon(tower.top_polygon)
 
-        if cell.is_current_stage and cell.progress_ratio > 0.0:
-            filled_height = max(6.0, float(cell.tower_height) * max(0.0, min(1.0, float(cell.progress_ratio))))
-            fill_top, fill_left, fill_right, _fill_path, _fill_bounds = self._build_tower_geometry(
-                center=tower.base_center,
-                height=filled_height,
-            )
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(_darken(base_color, 0.06))
-            painter.drawPolygon(fill_left)
-            painter.setBrush(_darken(base_color, 0.18))
-            painter.drawPolygon(fill_right)
-            painter.setBrush(_lighten(base_color, 0.08))
-            painter.drawPolygon(fill_top)
-            painter.setPen(QPen(_lighten(base_color, 0.55), 1.0))
-            painter.setBrush(Qt.NoBrush)
-            painter.drawPolygon(fill_top)
-
         if cell.is_current_stage:
             painter.setPen(QPen(_lighten(base_color, 0.55), 1.2))
             painter.drawLine(tower.top_polygon.at(3), tower.top_polygon.at(1))
         painter.restore()
 
-    def _paint_tower_labels(self, painter: QPainter, *, scale: float, offset_x: float, offset_y: float) -> None:
-        painter.save()
-        for tower in self._painted_towers:
-            if not tower.cell.is_current_stage:
-                continue
-            face_bounds = tower.right_polygon.boundingRect()
-            screen_rect = QRectF(
-                offset_x + (face_bounds.x() * scale) + 6.0,
-                offset_y + (face_bounds.y() * scale) + 6.0,
-                max(0.0, (face_bounds.width() * scale) - 12.0),
-                max(0.0, (face_bounds.height() * scale) - 12.0),
-            )
-            if screen_rect.width() < 54.0 or screen_rect.height() < 18.0:
-                continue
-
-            label_text = str(tower.cell.row.kit.kit_name or "").strip()
-            if not label_text:
-                continue
-
-            font = painter.font()
-            font.setBold(True)
-            font.setPointSize(9)
-            painter.setFont(font)
-            metrics = painter.fontMetrics()
-            elided = metrics.elidedText(label_text, Qt.ElideRight, int(screen_rect.width()))
-
-            painter.setPen(QColor(0, 0, 0, 110))
-            painter.drawText(screen_rect.translated(1.0, 1.0), Qt.AlignCenter, elided)
-            painter.setPen(QColor("#F8FAFC"))
-            painter.drawText(screen_rect, Qt.AlignCenter, elided)
-        painter.restore()
-
     def mouseMoveEvent(self, event):  # type: ignore[override]
         tower = self._tower_at(self._map_to_scene(event.position()))
-        hovered_key = None if tower is None else (tower.kit_id, tower.stage_id)
+        hovered_key = None if tower is None else (tower.kit_id, tower.lane_key)
         if hovered_key != self._hovered_key:
             self._hovered_key = hovered_key
             self.update()

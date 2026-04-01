@@ -151,8 +151,12 @@ class WrappingListWidget(QListWidget):
             if widget is None:
                 continue
             widget.setFixedWidth(target_width)
+            wrapped_height = int(widget.heightForWidth(target_width))
             widget.adjustSize()
-            item.setSizeHint(widget.sizeHint())
+            hint = widget.sizeHint()
+            if wrapped_height > 0:
+                hint.setHeight(wrapped_height)
+            item.setSizeHint(hint)
 
 
 class KitEditDialog(QDialog):
