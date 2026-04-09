@@ -1542,6 +1542,7 @@ class MainWindow(QMainWindow):
             trucks=list(self._trucks),
             schedule_insights=self._schedule_insights,
             max_rows=max(1, len(self._trucks) * 8),
+            include_small_kits=False,
         )
         parsed_labels = [str(row.row_label or "").split(" | ", 1) for row in rows]
         shared_truck_width = max((len(parts[0].rstrip()) for parts in parsed_labels if parts), default=0)

@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from typing import Callable
 
 from dashboard_helpers import normalize_blocked_state_from_kit
-from models import Truck, TruckKit
+from models import SECONDARY_FLOW_KIT_NAMES, Truck, TruckKit, canonicalize_kit_name
 from schedule import ScheduleInsights
 from stages import FABRICATION_ALLOWED_POSITIONS, FABRICATION_STAGE_POSITION_SCALE, Stage, stage_from_id
 
@@ -76,6 +76,10 @@ STAGE_BAR_COLORS: dict[Stage, str] = {
     Stage.WELD: "#7C3AED",
 }
 STAGE_BAR_ALPHA = 0.5
+SECONDARY_FLOW_KIT_KEYS = {
+    canonicalize_kit_name(name).casefold()
+    for name in SECONDARY_FLOW_KIT_NAMES
+}
 
 
 @dataclass(frozen=True)
@@ -303,11 +307,16 @@ def classify_front_status(
     return ("green", STATUS_COLORS["green"])
 
 
+def _is_small_kit(kit_name: str) -> bool:
+    return canonicalize_kit_name(str(kit_name or "")).casefold() in SECONDARY_FLOW_KIT_KEYS
+
+
 def build_overlay_rows(
     *,
     trucks: list[Truck],
     schedule_insights: ScheduleInsights,
     max_rows: int,
+    include_small_kits: bool = True,
 ) -> list[OverlayRow]:
     kit_windows_by_name: dict[str, dict[Stage, tuple[float, float]]] = {}
     for window in schedule_insights.kit_operation_windows:
@@ -333,6 +342,8 @@ def build_overlay_rows(
 
         for kit in truck.kits:
             if not kit.is_active:
+                continue
+            if not include_small_kits and _is_small_kit(kit.kit_name):
                 continue
 
             front_stage = stage_from_id(kit.front_stage_id)

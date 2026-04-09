@@ -409,6 +409,7 @@ def _build_card_gantt_render_context(
         trucks=trucks,
         schedule_insights=schedule_insights,
         max_rows=max(1, int(max_rows)),
+        include_small_kits=False,
     )
     if not rows:
         return None
