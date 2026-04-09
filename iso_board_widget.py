@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 
@@ -28,6 +29,12 @@ from stages import (
 NEUTRAL_TOWER_COLOR = "#94A3B8"
 COMPLETE_TILE_COLOR = "#64748B"
 OUTLINE_COLOR = "#0F172A"
+LANE_GUIDE_COLORS = {
+    "laser": "#38BDF8",
+    "bend": "#F59E0B",
+    "weld_a": "#F97316",
+    "weld_b": "#FB7185",
+}
 
 
 @dataclass(frozen=True)
@@ -66,6 +73,14 @@ MIN_TOWER_HEIGHT = 28
 MAX_TOWER_HEIGHT = 120
 VIEWPORT_PADDING = 18.0
 FUTURE_CROP_WEEKS = 2.0
+ROW_LABEL_WIDTH = 170.0
+ROW_LABEL_HEIGHT = 42.0
+ROW_LABEL_GAP = 18.0
+SCENE_PADDING_X = 38.0
+SCENE_PADDING_TOP = 30.0
+SCENE_PADDING_BOTTOM = 44.0
+HEADER_RECT_WIDTH = 114.0
+HEADER_RECT_HEIGHT = 34.0
 
 
 @dataclass(frozen=True)
@@ -152,6 +167,10 @@ def _status_label_for_key(status_key: str, *, blocked_reason: str) -> str:
     if normalized == "complete":
         return "Complete - finished flow stage"
     return "Neutral - no schedule anchor"
+
+
+def _lane_guide_color(lane_key: str) -> QColor:
+    return QColor(LANE_GUIDE_COLORS.get(str(lane_key or "").strip().lower(), "#94A3B8"))
 
 
 def _format_duration_weeks(value: float | None) -> str:
@@ -307,6 +326,34 @@ def _stage_diagonal_offset(stage_index: int) -> float:
     return float((len(DISPLAY_LANES) - 1) - int(stage_index)) * COLUMN_DY
 
 
+def _point_along_line(start: QPointF, end: QPointF, distance: float) -> QPointF:
+    dx = float(end.x()) - float(start.x())
+    dy = float(end.y()) - float(start.y())
+    length = math.hypot(dx, dy)
+    if length <= 0.001:
+        return QPointF(start)
+    ratio = float(distance) / length
+    return QPointF(float(start.x()) + (dx * ratio), float(start.y()) + (dy * ratio))
+
+
+def _quad_around_segment(start: QPointF, end: QPointF, half_width: float) -> QPolygonF:
+    dx = float(end.x()) - float(start.x())
+    dy = float(end.y()) - float(start.y())
+    length = math.hypot(dx, dy)
+    if length <= 0.001:
+        return QPolygonF()
+    px = -dy / length
+    py = dx / length
+    return QPolygonF(
+        [
+            QPointF(float(start.x()) + (px * half_width), float(start.y()) + (py * half_width)),
+            QPointF(float(start.x()) - (px * half_width), float(start.y()) - (py * half_width)),
+            QPointF(float(end.x()) - (px * half_width), float(end.y()) - (py * half_width)),
+            QPointF(float(end.x()) + (px * half_width), float(end.y()) + (py * half_width)),
+        ]
+    )
+
+
 def _row_horizontal_offset(row_index: int, row_count: int) -> float:
     # Mirror the board horizontally so the row stack fans down-left instead of down-right.
     return float(max(0, row_count - 1 - int(row_index))) * ROW_DX
@@ -320,6 +367,7 @@ class IsoBoardCanvas(QWidget):
         self._rows: list[IsoBoardRow] = []
         self._painted_towers: list[PaintedTower] = []
         self._content_size = QSize(900, 520)
+        self._scene_rect = QRectF(0.0, 0.0, 900.0, 520.0)
         self._max_tower_height = MAX_TOWER_HEIGHT
         self._selected_kit_id = -1
         self._hovered_key: tuple[int, str] | None = None
@@ -512,12 +560,37 @@ class IsoBoardCanvas(QWidget):
                 max_height = max(max_height, cell.tower_height)
 
         towers.sort(key=lambda item: (item.base_center.y(), item.base_center.x()))
-        width = int(round(LEFT_MARGIN + ((len(DISPLAY_LANES) - 1) * COLUMN_DX) + ((row_count - 1) * ROW_DX) + TILE_WIDTH + RIGHT_MARGIN))
-        height = int(round(TOP_MARGIN + max_height + ((len(DISPLAY_LANES) - 1) * COLUMN_DY) + ((row_count - 1) * ROW_DY) + TILE_DEPTH + BOTTOM_MARGIN))
+        scene_rect = QRectF()
+        for tower in towers:
+            scene_rect = tower.bounds if scene_rect.isNull() else scene_rect.united(tower.bounds)
+        for stage_index, _lane in enumerate(DISPLAY_LANES):
+            header_rect = self._stage_header_scene_rect(
+                stage_index=stage_index,
+                row_count=row_count,
+                max_tower_height=max_height,
+            )
+            scene_rect = header_rect if scene_rect.isNull() else scene_rect.united(header_rect)
+        for row in self._rows:
+            label_rect = self._row_label_scene_rect(row_index=row.row_index, row_count=row_count)
+            scene_rect = label_rect if scene_rect.isNull() else scene_rect.united(label_rect)
+        if scene_rect.isNull():
+            width = LEFT_MARGIN + ((len(DISPLAY_LANES) - 1) * COLUMN_DX) + TILE_WIDTH + RIGHT_MARGIN
+            height = TOP_MARGIN + max_height + ((len(DISPLAY_LANES) - 1) * COLUMN_DY) + TILE_DEPTH + BOTTOM_MARGIN
+            scene_rect = QRectF(0.0, 0.0, float(width), float(height))
+        scene_rect = scene_rect.adjusted(
+            -SCENE_PADDING_X,
+            -SCENE_PADDING_TOP,
+            SCENE_PADDING_X,
+            SCENE_PADDING_BOTTOM,
+        )
 
         self._painted_towers = towers
         self._max_tower_height = max_height
-        self._content_size = QSize(max(900, width), max(520, height))
+        self._scene_rect = scene_rect
+        self._content_size = QSize(
+            max(1, int(round(scene_rect.width()))),
+            max(1, int(round(scene_rect.height()))),
+        )
         self.update()
 
     def resizeEvent(self, event):  # type: ignore[override]
@@ -653,14 +726,18 @@ class IsoBoardCanvas(QWidget):
         painter.save()
         painter.translate(offset_x, offset_y)
         painter.scale(scale, scale)
+        self._paint_board_guides(painter)
         for tower in self._painted_towers:
             self._paint_tower(painter, tower)
         painter.restore()
+        self._paint_row_labels(painter, scale=scale, offset_x=offset_x, offset_y=offset_y)
         self._paint_stage_headers(painter, scale=scale, offset_x=offset_x, offset_y=offset_y)
+        self._paint_focus_card(painter)
 
     def _render_transform(self) -> tuple[float, float, float]:
-        scene_width = max(1.0, float(self._content_size.width()))
-        scene_height = max(1.0, float(self._content_size.height()))
+        scene_rect = QRectF(self._scene_rect)
+        scene_width = max(1.0, float(scene_rect.width()))
+        scene_height = max(1.0, float(scene_rect.height()))
         available_rect = QRectF(self.rect()).adjusted(
             VIEWPORT_PADDING,
             VIEWPORT_PADDING,
@@ -675,8 +752,8 @@ class IsoBoardCanvas(QWidget):
         scale = max(0.1, min(scale_x, scale_y))
         content_width = scene_width * scale
         content_height = scene_height * scale
-        offset_x = available_rect.left() + ((available_rect.width() - content_width) / 2.0)
-        offset_y = available_rect.top() + ((available_rect.height() - content_height) / 2.0)
+        offset_x = available_rect.left() + ((available_rect.width() - content_width) / 2.0) - (scene_rect.left() * scale)
+        offset_y = available_rect.top() + ((available_rect.height() - content_height) / 2.0) - (scene_rect.top() * scale)
         return (scale, offset_x, offset_y)
 
     def _map_to_scene(self, position: QPointF) -> QPointF:
@@ -705,6 +782,16 @@ class IsoBoardCanvas(QWidget):
             gradient.setColorAt(0.0, QColor("#F8FBFF"))
             gradient.setColorAt(1.0, QColor("#EAF0F6"))
         painter.fillRect(rect, gradient)
+        glow = QLinearGradient(rect.topLeft(), rect.topRight())
+        if self._dark_mode:
+            glow.setColorAt(0.0, QColor(18, 52, 78, 56))
+            glow.setColorAt(0.45, QColor(36, 112, 158, 22))
+            glow.setColorAt(1.0, QColor(7, 17, 27, 0))
+        else:
+            glow.setColorAt(0.0, QColor(255, 255, 255, 180))
+            glow.setColorAt(0.45, QColor(215, 232, 247, 72))
+            glow.setColorAt(1.0, QColor(248, 251, 255, 0))
+        painter.fillRect(rect, glow)
 
     def _paint_empty_state(self, painter: QPainter) -> None:
         painter.save()
@@ -716,19 +803,26 @@ class IsoBoardCanvas(QWidget):
         painter.save()
         row_count = max(len(self._rows), 1)
         for stage_index, lane in enumerate(DISPLAY_LANES):
-            scene_center = QPointF(
-                LEFT_MARGIN + (stage_index * COLUMN_DX) + _row_horizontal_offset(0, row_count),
-                TOP_MARGIN - self._max_tower_height - 52 + _stage_diagonal_offset(stage_index),
+            scene_rect = self._stage_header_scene_rect(
+                stage_index=stage_index,
+                row_count=row_count,
+                max_tower_height=self._max_tower_height,
             )
+            scene_center = scene_rect.center()
             center = self._map_from_scene(scene_center, scale=scale, offset_x=offset_x, offset_y=offset_y)
-            rect_width = max(88.0, min(114.0, 102.0 * max(scale, 0.9)))
-            rect = QRectF(center.x() - (rect_width / 2.0), center.y() - 15.0, rect_width, 30.0)
-            fill = QColor("#17324A") if self._dark_mode else QColor("#FFFFFF")
+            rect = QRectF(center.x() - (HEADER_RECT_WIDTH / 2.0), center.y() - (HEADER_RECT_HEIGHT / 2.0), HEADER_RECT_WIDTH, HEADER_RECT_HEIGHT)
+            fill = QColor("#163147") if self._dark_mode else QColor("#FFFFFF")
             border = QColor("#5D7C96") if self._dark_mode else QColor("#CBD5E1")
             text_color = QColor("#CBEAFF") if self._dark_mode else QColor("#334155")
+            accent = _lane_guide_color(lane.key)
+            accent.setAlpha(255 if self._dark_mode else 224)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 22 if self._dark_mode else 12))
+            painter.drawRoundedRect(rect.adjusted(0.0, 3.0, 0.0, 3.0), 9.0, 9.0)
             painter.setPen(QPen(border, 1.0))
             painter.setBrush(fill)
-            painter.drawRoundedRect(rect, 8.0, 8.0)
+            painter.drawRoundedRect(rect, 9.0, 9.0)
+            painter.fillRect(QRectF(rect.left() + 10.0, rect.bottom() - 5.0, rect.width() - 20.0, 3.0), accent)
             painter.setPen(text_color)
             font = painter.font()
             font.setBold(True)
@@ -737,10 +831,265 @@ class IsoBoardCanvas(QWidget):
             painter.drawText(rect, Qt.AlignCenter, lane.label)
         painter.restore()
 
+    def _paint_board_guides(self, painter: QPainter) -> None:
+        row_count = len(self._rows)
+        if row_count <= 0:
+            return
+
+        neutral_line_color = QColor("#88A5BA") if self._dark_mode else QColor("#94A3B8")
+        neutral_line_color.setAlpha(72 if self._dark_mode else 92)
+        floor_outline = QColor("#4E7493") if self._dark_mode else QColor("#CBD5E1")
+        floor_outline.setAlpha(86 if self._dark_mode else 120)
+
+        painter.save()
+        for stage_index, lane in enumerate(DISPLAY_LANES):
+            lane_centers = [
+                QPointF(
+                    LEFT_MARGIN + (stage_index * COLUMN_DX) + _row_horizontal_offset(row_index, row_count),
+                    TOP_MARGIN + _stage_diagonal_offset(stage_index) + (row_index * ROW_DY),
+                )
+                for row_index in range(row_count)
+            ]
+            if not lane_centers:
+                continue
+
+            lane_color = _lane_guide_color(lane.key)
+            lane_fill = QColor(lane_color)
+            lane_fill.setAlpha(34 if self._dark_mode else 28)
+            lane_border = QColor(lane_color)
+            lane_border.setAlpha(82 if self._dark_mode else 74)
+            lane_centerline = QColor(lane_color)
+            lane_centerline.setAlpha(118 if self._dark_mode else 106)
+            floor_fill = QColor(lane_color)
+            floor_fill.setAlpha(22 if self._dark_mode else 18)
+
+            band_start = lane_centers[0]
+            band_end = lane_centers[-1]
+            if row_count == 1:
+                band_start = QPointF(float(band_start.x()) - 46.0, float(band_start.y()) + 20.0)
+                band_end = QPointF(float(band_end.x()) + 46.0, float(band_end.y()) - 20.0)
+            else:
+                band_start = _point_along_line(lane_centers[0], lane_centers[-1], -40.0)
+                band_end = _point_along_line(lane_centers[-1], lane_centers[0], -40.0)
+
+            lane_band = _quad_around_segment(band_start, band_end, 28.0)
+            if not lane_band.isEmpty():
+                painter.setPen(QPen(lane_border, 1.2))
+                painter.setBrush(lane_fill)
+                painter.drawPolygon(lane_band)
+
+            painter.setPen(QPen(lane_centerline, 1.8, Qt.SolidLine))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawLine(band_start, band_end)
+
+            painter.setPen(QPen(neutral_line_color, 1.0, Qt.DashLine))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawLine(
+                QPointF(lane_centers[0].x() - (TILE_WIDTH * 0.35), lane_centers[0].y() + (TILE_DEPTH * 0.55)),
+                QPointF(lane_centers[-1].x() - (TILE_WIDTH * 0.35), lane_centers[-1].y() + (TILE_DEPTH * 0.55)),
+            )
+            painter.drawLine(
+                QPointF(lane_centers[0].x() + (TILE_WIDTH * 0.35), lane_centers[0].y()),
+                QPointF(lane_centers[-1].x() + (TILE_WIDTH * 0.35), lane_centers[-1].y()),
+            )
+
+            painter.setPen(QPen(floor_outline, 1.0))
+            painter.setBrush(floor_fill)
+            for center in lane_centers:
+                floor_top, _left, _right, _path, _bounds = self._build_tower_geometry(
+                    center=center,
+                    height=0.0,
+                    width=TILE_WIDTH - 8.0,
+                    depth=TILE_DEPTH - 8.0,
+                )
+                painter.drawPolygon(floor_top)
+
+        towers_by_row: dict[int, list[PaintedTower]] = {}
+        for tower in self._painted_towers:
+            towers_by_row.setdefault(tower.row_index, []).append(tower)
+
+        for row in self._rows:
+            row_towers = sorted(towers_by_row.get(row.row_index, []), key=lambda item: item.cell.stage_index)
+            if not row_towers:
+                continue
+
+            row_color = QColor(row.status_color)
+            if not row_color.isValid():
+                row_color = QColor(NEUTRAL_TOWER_COLOR)
+            row_line_color = QColor(row_color)
+            row_line_color.setAlpha(138 if self._dark_mode else 112)
+            row_fill_color = QColor(row_color)
+            row_fill_color.setAlpha(90 if self._dark_mode else 74)
+
+            label_rect = self._row_label_scene_rect(row_index=row.row_index, row_count=row_count)
+            row_anchor = QPointF(label_rect.right() + 10.0, label_rect.center().y())
+            row_points = [row_anchor] + [
+                QPointF(float(tower.base_center.x()) - 6.0, float(tower.base_center.y()) + (TILE_DEPTH * 0.12))
+                for tower in row_towers
+            ]
+
+            painter.setPen(QPen(row_line_color, 2.2, Qt.DashLine))
+            painter.setBrush(Qt.NoBrush)
+            for start, end in zip(row_points, row_points[1:]):
+                painter.drawLine(start, end)
+
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(row_fill_color)
+            painter.drawEllipse(row_anchor, 4.2, 4.2)
+            for point in row_points[1:]:
+                painter.drawEllipse(point, 3.6, 3.6)
+        painter.restore()
+
+    def _paint_row_labels(self, painter: QPainter, *, scale: float, offset_x: float, offset_y: float) -> None:
+        if not self._rows:
+            return
+
+        painter.save()
+        for row in self._rows:
+            scene_rect = self._row_label_scene_rect(
+                row_index=row.row_index,
+                row_count=len(self._rows),
+            )
+            top_left = self._map_from_scene(scene_rect.topLeft(), scale=scale, offset_x=offset_x, offset_y=offset_y)
+            bottom_right = self._map_from_scene(scene_rect.bottomRight(), scale=scale, offset_x=offset_x, offset_y=offset_y)
+            rect = QRectF(top_left, bottom_right).normalized()
+
+            fill = QColor("#13283C") if self._dark_mode else QColor("#FFFFFF")
+            border = QColor("#4E7493") if self._dark_mode else QColor("#CBD5E1")
+            subtle = QColor("#8FB4D4") if self._dark_mode else QColor("#64748B")
+            status_chip = QColor(row.status_color)
+            if not status_chip.isValid():
+                status_chip = QColor(NEUTRAL_TOWER_COLOR)
+
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 26 if self._dark_mode else 12))
+            painter.drawRoundedRect(rect.adjusted(0.0, 3.0, 0.0, 3.0), 10.0, 10.0)
+            painter.setPen(QPen(border, 1.0))
+            painter.setBrush(fill)
+            painter.drawRoundedRect(rect, 10.0, 10.0)
+
+            chip_rect = QRectF(rect.left() + 10.0, rect.center().y() - 7.0, 14.0, 14.0)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(status_chip)
+            painter.drawEllipse(chip_rect)
+
+            text_left = rect.left() + 30.0
+            text_width = rect.width() - 40.0
+
+            truck_font = painter.font()
+            truck_font.setBold(True)
+            truck_font.setPointSize(9)
+            painter.setFont(truck_font)
+            painter.setPen(QColor("#E2F3FF") if self._dark_mode else QColor("#0F172A"))
+            truck_text = painter.fontMetrics().elidedText(row.truck_number, Qt.ElideRight, int(text_width))
+            painter.drawText(
+                QRectF(text_left, rect.top() + 5.0, text_width, 16.0),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                truck_text,
+            )
+
+            kit_font = painter.font()
+            kit_font.setBold(False)
+            kit_font.setPointSize(8)
+            painter.setFont(kit_font)
+            painter.setPen(subtle)
+            kit_text = painter.fontMetrics().elidedText(str(row.kit.kit_name or ""), Qt.ElideRight, int(text_width))
+            painter.drawText(
+                QRectF(text_left, rect.bottom() - 19.0, text_width, 14.0),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                kit_text,
+            )
+        painter.restore()
+
+    def _paint_focus_card(self, painter: QPainter) -> None:
+        painter.save()
+        card_rect = QRectF(18.0, 18.0, min(320.0, max(250.0, self.width() * 0.26)), 100.0)
+        fill = QColor("#10253A") if self._dark_mode else QColor("#FFFFFF")
+        border = QColor("#4E7493") if self._dark_mode else QColor("#CBD5E1")
+        muted = QColor("#9CCBE8") if self._dark_mode else QColor("#64748B")
+        title = QColor("#E2F3FF") if self._dark_mode else QColor("#0F172A")
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 28 if self._dark_mode else 12))
+        painter.drawRoundedRect(card_rect.adjusted(0.0, 4.0, 0.0, 4.0), 12.0, 12.0)
+        painter.setPen(QPen(border, 1.0))
+        painter.setBrush(fill)
+        painter.drawRoundedRect(card_rect, 12.0, 12.0)
+
+        focus = self._focused_tower()
+        if focus is None:
+            painter.setPen(title)
+            header_font = painter.font()
+            header_font.setBold(True)
+            header_font.setPointSize(11)
+            painter.setFont(header_font)
+            painter.drawText(QRectF(card_rect.left() + 14.0, card_rect.top() + 10.0, card_rect.width() - 28.0, 18.0), Qt.AlignLeft | Qt.AlignVCenter, "3D Flow")
+            painter.setPen(muted)
+            body_font = painter.font()
+            body_font.setBold(False)
+            body_font.setPointSize(9)
+            painter.setFont(body_font)
+            painter.drawText(
+                QRectF(card_rect.left() + 14.0, card_rect.top() + 34.0, card_rect.width() - 28.0, 48.0),
+                Qt.TextWordWrap,
+                "Hover a tower to inspect it. Click to pin a row and double-click to open its PDF when one is linked.",
+            )
+            painter.restore()
+            return
+
+        cell = focus.cell
+        color_chip = QColor(cell.fill_color)
+        if not color_chip.isValid():
+            color_chip = QColor(NEUTRAL_TOWER_COLOR)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(color_chip)
+        painter.drawRoundedRect(QRectF(card_rect.left() + 14.0, card_rect.top() + 14.0, 10.0, 38.0), 5.0, 5.0)
+
+        header_font = painter.font()
+        header_font.setBold(True)
+        header_font.setPointSize(10)
+        painter.setFont(header_font)
+        painter.setPen(title)
+        painter.drawText(
+            QRectF(card_rect.left() + 32.0, card_rect.top() + 12.0, card_rect.width() - 46.0, 18.0),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            f"{cell.row.truck_number}  {cell.row.kit.kit_name}",
+        )
+
+        painter.setPen(muted)
+        body_font = painter.font()
+        body_font.setBold(False)
+        body_font.setPointSize(8)
+        painter.setFont(body_font)
+        painter.drawText(
+            QRectF(card_rect.left() + 32.0, card_rect.top() + 30.0, card_rect.width() - 46.0, 18.0),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            f"{cell.lane_label}  |  {cell.row.status_label}",
+        )
+
+        progress_text = "Progress n/a"
+        if cell.is_current_stage:
+            progress_text = f"Progress {int(round(max(0.0, min(1.0, cell.progress_ratio)) * 100.0))}%"
+        painter.setPen(title)
+        detail_text = f"Planned {_format_duration_weeks(cell.raw_duration_weeks)}   {progress_text}"
+        painter.drawText(
+            QRectF(card_rect.left() + 14.0, card_rect.top() + 60.0, card_rect.width() - 28.0, 16.0),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            detail_text,
+        )
+        painter.setPen(muted)
+        footer_text = "Linked PDF available" if cell.pdf_target else "No linked PDF"
+        painter.drawText(
+            QRectF(card_rect.left() + 14.0, card_rect.top() + 78.0, card_rect.width() - 28.0, 14.0),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            footer_text,
+        )
+        painter.restore()
+
     def _paint_tower(self, painter: QPainter, tower: PaintedTower) -> None:
         cell = tower.cell
         outline_width = 2.0 if cell.is_current_stage else 1.0
-        if tower.kit_id == self._selected_kit_id or self._hovered_key == (tower.kit_id, tower.lane_key):
+        is_focused = tower.kit_id == self._selected_kit_id or self._hovered_key == (tower.kit_id, tower.lane_key)
+        if is_focused:
             outline_width = 2.4
 
         base_color = cell.fill_color
@@ -755,6 +1104,12 @@ class IsoBoardCanvas(QWidget):
         outline_color = _lighten(OUTLINE_COLOR, 0.45) if self._dark_mode else QColor(OUTLINE_COLOR)
 
         painter.save()
+        if is_focused:
+            glow = _lighten(base_color, 0.55)
+            glow.setAlpha(58 if self._dark_mode else 48)
+            painter.setPen(QPen(glow, 7.0))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(tower.body_path)
         painter.setPen(Qt.NoPen)
         shadow_color = QColor(0, 0, 0, 28 if self._dark_mode else 18)
         painter.setBrush(shadow_color)
@@ -861,6 +1216,57 @@ class IsoBoardCanvas(QWidget):
             if tower.body_path.contains(position):
                 return tower
         return None
+
+    def _focused_tower(self) -> PaintedTower | None:
+        if self._hovered_key is not None:
+            hovered = next(
+                (tower for tower in reversed(self._painted_towers) if (tower.kit_id, tower.lane_key) == self._hovered_key),
+                None,
+            )
+            if hovered is not None:
+                return hovered
+        if self._selected_kit_id > 0:
+            selected_current = next(
+                (
+                    tower
+                    for tower in reversed(self._painted_towers)
+                    if tower.kit_id == self._selected_kit_id and tower.cell.is_current_stage
+                ),
+                None,
+            )
+            if selected_current is not None:
+                return selected_current
+            return next(
+                (tower for tower in reversed(self._painted_towers) if tower.kit_id == self._selected_kit_id),
+                None,
+            )
+        return None
+
+    @staticmethod
+    def _row_label_scene_rect(*, row_index: int, row_count: int) -> QRectF:
+        center = QPointF(
+            LEFT_MARGIN + _row_horizontal_offset(row_index, row_count) - (TILE_WIDTH / 2.0) - ROW_LABEL_GAP - (ROW_LABEL_WIDTH / 2.0),
+            TOP_MARGIN + _stage_diagonal_offset(0) + (row_index * ROW_DY) - 2.0,
+        )
+        return QRectF(
+            center.x() - (ROW_LABEL_WIDTH / 2.0),
+            center.y() - (ROW_LABEL_HEIGHT / 2.0),
+            ROW_LABEL_WIDTH,
+            ROW_LABEL_HEIGHT,
+        )
+
+    @staticmethod
+    def _stage_header_scene_rect(*, stage_index: int, row_count: int, max_tower_height: int) -> QRectF:
+        center = QPointF(
+            LEFT_MARGIN + (stage_index * COLUMN_DX) + _row_horizontal_offset(0, row_count),
+            TOP_MARGIN - max_tower_height - 56 + _stage_diagonal_offset(stage_index),
+        )
+        return QRectF(
+            center.x() - (HEADER_RECT_WIDTH / 2.0),
+            center.y() - (HEADER_RECT_HEIGHT / 2.0),
+            HEADER_RECT_WIDTH,
+            HEADER_RECT_HEIGHT,
+        )
 
 
 class IsoBoardWidget(QWidget):

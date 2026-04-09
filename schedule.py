@@ -15,6 +15,12 @@ DEFAULT_KIT_LAG_WEEKS: dict[str, float] = {
     "Console": 2.5,
     "Interior": 4.0,
     "Exterior": 5.0,
+    "Chassis": 1.0,
+    "Pump Covering": 2.25,
+    "Pump Mounts": 2.5,
+    "Pump Brackets": 2.75,
+    "Step Pack": 4.5,
+    "Operational Panels": 3.25,
 }
 DEFAULT_KIT_OPERATION_WINDOWS: dict[str, dict[Stage, tuple[float, float]]] = {
     "Body": {
@@ -41,6 +47,36 @@ DEFAULT_KIT_OPERATION_WINDOWS: dict[str, dict[Stage, tuple[float, float]]] = {
         Stage.LASER: (0.0, 1.0),
         Stage.BEND: (1.0, 2.0),
         Stage.WELD: (2.0, 3.0),
+    },
+    "Chassis": {
+        Stage.LASER: (0.0, 0.5),
+        Stage.BEND: (0.5, 1.0),
+        Stage.WELD: (1.0, 2.0),
+    },
+    "Pump Covering": {
+        Stage.LASER: (0.0, 0.25),
+        Stage.BEND: (0.25, 0.75),
+        Stage.WELD: (0.75, 1.25),
+    },
+    "Pump Mounts": {
+        Stage.LASER: (0.0, 0.25),
+        Stage.BEND: (0.25, 0.75),
+        Stage.WELD: (0.75, 1.5),
+    },
+    "Pump Brackets": {
+        Stage.LASER: (0.0, 0.25),
+        Stage.BEND: (0.25, 0.75),
+        Stage.WELD: (0.75, 1.5),
+    },
+    "Step Pack": {
+        Stage.LASER: (0.0, 0.5),
+        Stage.BEND: (0.5, 1.0),
+        Stage.WELD: (1.0, 1.75),
+    },
+    "Operational Panels": {
+        Stage.LASER: (0.0, 0.4),
+        Stage.BEND: (0.4, 0.9),
+        Stage.WELD: (0.9, 1.6),
     },
 }
 CONFIG_FILENAME = "schedule_config.json"

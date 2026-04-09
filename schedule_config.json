@@ -6,14 +6,32 @@
     "Pumphouse": {
       "lag_weeks": 2.0
     },
-    "Console Pack": {
+    "Console": {
       "lag_weeks": 2.5
     },
-    "Interior Pack": {
+    "Interior": {
       "lag_weeks": 4.0
     },
-    "Exterior Pack": {
+    "Exterior": {
       "lag_weeks": 5.0
+    },
+    "Chassis": {
+      "lag_weeks": 1.0
+    },
+    "Pump Covering": {
+      "lag_weeks": 2.25
+    },
+    "Pump Mounts": {
+      "lag_weeks": 2.5
+    },
+    "Pump Brackets": {
+      "lag_weeks": 2.75
+    },
+    "Step Pack": {
+      "lag_weeks": 4.5
+    },
+    "Operational Panels": {
+      "lag_weeks": 3.25
     }
   },
   "kit_operation_windows": {
@@ -45,7 +63,7 @@
         "end_offset_weeks": 3.0
       }
     },
-    "Console Pack": {
+    "Console": {
       "laser": {
         "start_offset_weeks": 0.0,
         "end_offset_weeks": 0.5
@@ -59,7 +77,7 @@
         "end_offset_weeks": 1.5
       }
     },
-    "Interior Pack": {
+    "Interior": {
       "laser": {
         "start_offset_weeks": 0.0,
         "end_offset_weeks": 1.0
@@ -73,7 +91,7 @@
         "end_offset_weeks": 3.0
       }
     },
-    "Exterior Pack": {
+    "Exterior": {
       "laser": {
         "start_offset_weeks": 0.0,
         "end_offset_weeks": 1.0
@@ -85,6 +103,90 @@
       "weld": {
         "start_offset_weeks": 2.0,
         "end_offset_weeks": 3.0
+      }
+    },
+    "Chassis": {
+      "laser": {
+        "start_offset_weeks": 0.0,
+        "end_offset_weeks": 0.5
+      },
+      "bend": {
+        "start_offset_weeks": 0.5,
+        "end_offset_weeks": 1.0
+      },
+      "weld": {
+        "start_offset_weeks": 1.0,
+        "end_offset_weeks": 2.0
+      }
+    },
+    "Pump Covering": {
+      "laser": {
+        "start_offset_weeks": 0.0,
+        "end_offset_weeks": 0.25
+      },
+      "bend": {
+        "start_offset_weeks": 0.25,
+        "end_offset_weeks": 0.75
+      },
+      "weld": {
+        "start_offset_weeks": 0.75,
+        "end_offset_weeks": 1.25
+      }
+    },
+    "Pump Mounts": {
+      "laser": {
+        "start_offset_weeks": 0.0,
+        "end_offset_weeks": 0.25
+      },
+      "bend": {
+        "start_offset_weeks": 0.25,
+        "end_offset_weeks": 0.75
+      },
+      "weld": {
+        "start_offset_weeks": 0.75,
+        "end_offset_weeks": 1.5
+      }
+    },
+    "Pump Brackets": {
+      "laser": {
+        "start_offset_weeks": 0.0,
+        "end_offset_weeks": 0.25
+      },
+      "bend": {
+        "start_offset_weeks": 0.25,
+        "end_offset_weeks": 0.75
+      },
+      "weld": {
+        "start_offset_weeks": 0.75,
+        "end_offset_weeks": 1.5
+      }
+    },
+    "Step Pack": {
+      "laser": {
+        "start_offset_weeks": 0.0,
+        "end_offset_weeks": 0.5
+      },
+      "bend": {
+        "start_offset_weeks": 0.5,
+        "end_offset_weeks": 1.0
+      },
+      "weld": {
+        "start_offset_weeks": 1.0,
+        "end_offset_weeks": 1.75
+      }
+    },
+    "Operational Panels": {
+      "laser": {
+        "start_offset_weeks": 0.0,
+        "end_offset_weeks": 0.4
+      },
+      "bend": {
+        "start_offset_weeks": 0.4,
+        "end_offset_weeks": 0.9
+      },
+      "weld": {
+        "start_offset_weeks": 0.9,
+        "end_offset_weeks": 1.6
       }
     }
   }

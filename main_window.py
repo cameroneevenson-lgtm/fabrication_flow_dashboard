@@ -6,7 +6,7 @@ import sqlite3
 import json
 import urllib.error
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 import time
@@ -69,7 +69,14 @@ from metrics import (
     DashboardMetrics,
     compute_dashboard_metrics,
 )
-from models import RELEASE_STATES, Truck, TruckKit, pdf_link
+from models import (
+    RELEASE_STATES,
+    SECONDARY_FLOW_KIT_NAMES,
+    Truck,
+    TruckKit,
+    canonicalize_kit_name,
+    pdf_link,
+)
 from schedule import ScheduleInsights, build_schedule_insights
 from stages import (
     FABRICATION_STAGE_POSITION_SCALE,
@@ -93,6 +100,12 @@ def _current_week_of_label() -> str:
     today = date.today()
     monday = today - timedelta(days=today.weekday())
     return monday.strftime("%b %d, %Y")
+
+
+SECONDARY_FLOW_KIT_KEYS = {
+    canonicalize_kit_name(name).casefold()
+    for name in SECONDARY_FLOW_KIT_NAMES
+}
 
 
 @dataclass(frozen=True)
@@ -1149,10 +1162,39 @@ class MainWindow(QMainWindow):
 
         self._flow_tabs = QTabWidget()
         self._flow_tabs.addTab(main_splitter, "Dashboard")
+        self._flow_tabs.addTab(self._build_secondary_flow_panel(), "Small Kits")
         self._flow_tabs.addTab(self._build_3d_flow_panel(), "3D Flow")
+        self._flow_tabs.currentChanged.connect(self._handle_flow_tab_changed)
 
         layout.addWidget(self._flow_tabs, 1)
         return view
+
+    def _build_secondary_flow_panel(self) -> QWidget:
+        panel = QFrame()
+        self._secondary_flow_panel = panel
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(8, 8, 8, 8)
+        panel_layout.setSpacing(8)
+
+        title = QLabel("Small Kits")
+        title.setWordWrap(True)
+        self._secondary_flow_title_label = title
+        panel_layout.addWidget(title)
+
+        summary = QLabel(
+            "Smaller canonical truck kits are tracked here so the main dashboard can stay focused on the primary assemblies."
+        )
+        summary.setWordWrap(True)
+        self._secondary_flow_summary_label = summary
+        panel_layout.addWidget(summary)
+
+        board_widget = BoardWidget()
+        board_widget.kit_selected.connect(self._on_kit_selected)
+        board_widget.kit_stage_drop_requested.connect(self._on_kit_stage_drop_requested)
+        self._secondary_board_widget = board_widget
+        panel_layout.addWidget(board_widget, 1)
+
+        return panel
 
     def _build_3d_flow_panel(self) -> QWidget:
         panel = QFrame()
@@ -1255,6 +1297,8 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "_board_widget"):
             self._board_widget.set_dark_mode(dark)
+        if hasattr(self, "_secondary_board_widget"):
+            self._secondary_board_widget.set_dark_mode(dark)
         if hasattr(self, "_iso_board_widget"):
             self._iso_board_widget.set_dark_mode(dark)
 
@@ -1288,6 +1332,16 @@ class MainWindow(QMainWindow):
             )
         if hasattr(self, "_iso_board_panel"):
             self._iso_board_panel.setStyleSheet(panel_style)
+        if hasattr(self, "_secondary_flow_panel"):
+            self._secondary_flow_panel.setStyleSheet(panel_style)
+        if hasattr(self, "_secondary_flow_title_label"):
+            self._secondary_flow_title_label.setStyleSheet(
+                f"font-size: 16px; font-weight: 700; color: {title_color};"
+            )
+        if hasattr(self, "_secondary_flow_summary_label"):
+            self._secondary_flow_summary_label.setStyleSheet(
+                f"font-size: 12px; color: {muted_color};"
+            )
 
         if hasattr(self, "_attention_panel"):
             self._attention_panel.set_watermark_theme(
@@ -1418,6 +1472,30 @@ class MainWindow(QMainWindow):
                 )
         return mapping
 
+    @staticmethod
+    def _filter_trucks_for_secondary_scope(
+        trucks: list[Truck],
+        *,
+        include_secondary: bool,
+    ) -> list[Truck]:
+        scoped_trucks: list[Truck] = []
+        for truck in trucks:
+            scoped_kits = [
+                kit
+                for kit in truck.kits
+                if kit.is_active
+                and (
+                    canonicalize_kit_name(str(kit.kit_name or "")).casefold() in SECONDARY_FLOW_KIT_KEYS
+                ) == bool(include_secondary)
+            ]
+            if not scoped_kits:
+                continue
+            scoped_truck = replace(truck, kits=list(scoped_kits))
+            if is_truck_complete(scoped_truck):
+                continue
+            scoped_trucks.append(scoped_truck)
+        return scoped_trucks
+
     def _build_dashboard_view_state(self, trucks: list[Truck]) -> DashboardViewState:
         # Build one coherent snapshot so board, metrics, attention, and gantt all render from the same state.
         ordered_trucks = sort_trucks_natural(list(trucks))
@@ -1438,6 +1516,24 @@ class MainWindow(QMainWindow):
             dashboard_metrics=dashboard_metrics,
             kit_stage_windows_by_truck=kit_stage_windows_by_truck,
         )
+
+    def _update_secondary_flow_summary(self, state: DashboardViewState) -> None:
+        if not hasattr(self, "_secondary_flow_summary_label"):
+            return
+        truck_count = len(state.trucks)
+        kit_count = len(state.kit_index)
+        hold_count = len(state.schedule_insights.release_hold_items)
+        if truck_count <= 0 or kit_count <= 0:
+            text = (
+                "Smaller canonical truck kits are tracked here when they are active, keeping the main dashboard focused on the big assemblies."
+            )
+        else:
+            hold_text = f" | holds {hold_count}" if hold_count else ""
+            text = (
+                f"{kit_count} active small-kit lanes across {truck_count} truck(s){hold_text}. "
+                "Drag cards between stages or click a card to edit details."
+            )
+        self._secondary_flow_summary_label.setText(text)
 
     def _build_operational_overlay_rows(self) -> list[OverlayRow]:
         if self._schedule_insights is None:
@@ -1463,6 +1559,7 @@ class MainWindow(QMainWindow):
         for candidate in (
             self,
             getattr(self, "_board_widget", None),
+            getattr(self, "_secondary_board_widget", None),
             getattr(self, "_iso_board_widget", None),
             getattr(self, "_attention_list", None),
             getattr(self, "_gantt_tabs", None),
@@ -1477,12 +1574,18 @@ class MainWindow(QMainWindow):
                 widget.setUpdatesEnabled(True)
                 widget.update()
 
-    def _apply_dashboard_view_state(self, state: DashboardViewState) -> None:
-        self._trucks = list(state.trucks)
-        self._kit_index = dict(state.kit_index)
-        self._schedule_insights = state.schedule_insights
-        self._dashboard_metrics = state.dashboard_metrics
-        self._kit_stage_windows_by_truck = dict(state.kit_stage_windows_by_truck)
+    def _apply_dashboard_view_state(
+        self,
+        *,
+        primary_state: DashboardViewState,
+        secondary_state: DashboardViewState,
+        all_kit_index: dict[int, tuple[Truck, TruckKit]],
+    ) -> None:
+        self._trucks = list(primary_state.trucks)
+        self._kit_index = dict(all_kit_index)
+        self._schedule_insights = primary_state.schedule_insights
+        self._dashboard_metrics = primary_state.dashboard_metrics
+        self._kit_stage_windows_by_truck = dict(primary_state.kit_stage_windows_by_truck)
         overlay_rows = self._build_operational_overlay_rows()
 
         with self._batch_dashboard_ui_updates():
@@ -1498,38 +1601,46 @@ class MainWindow(QMainWindow):
                 self._kit_stage_windows_by_truck,
                 overlay_rows=overlay_rows,
             )
+            self._secondary_board_widget.set_data(
+                secondary_state.trucks,
+                secondary_state.schedule_insights.kit_release_hold_weeks_by_id,
+                secondary_state.schedule_insights.current_week,
+                secondary_state.kit_stage_windows_by_truck,
+            )
+            self._update_secondary_flow_summary(secondary_state)
             self._update_health_strip(self._dashboard_metrics)
             self._update_attention_panel(self._dashboard_metrics)
             self._update_gantt_panel(rows=overlay_rows)
 
             hold_count = len(self._schedule_insights.release_hold_items)
+            secondary_kit_count = len(secondary_state.kit_index)
             self._status_label.setText(
-                f"Week of {_current_week_of_label()} | Trucks: {len(self._trucks)} "
-                f"| Active Kits: {len(self._kit_index)} | Engineering Holds: {hold_count}"
+                f"Week of {_current_week_of_label()} | Main Trucks: {len(self._trucks)} "
+                f"| Main Kits: {len(primary_state.kit_index)} | Small Kits: {secondary_kit_count} "
+                f"| Main Holds: {hold_count}"
             )
 
     def refresh_view(self) -> None:
         self._invalidate_gantt_layout_cache()
-        state = self._build_dashboard_view_state(load_active_dashboard_trucks(self.database))
-        self._apply_dashboard_view_state(state)
+        all_trucks = load_active_dashboard_trucks(self.database)
+        primary_trucks = self._filter_trucks_for_secondary_scope(
+            all_trucks,
+            include_secondary=False,
+        )
+        secondary_trucks = self._filter_trucks_for_secondary_scope(
+            all_trucks,
+            include_secondary=True,
+        )
+        primary_state = self._build_dashboard_view_state(primary_trucks)
+        secondary_state = self._build_dashboard_view_state(secondary_trucks)
+        self._apply_dashboard_view_state(
+            primary_state=primary_state,
+            secondary_state=secondary_state,
+            all_kit_index=self._build_kit_index(all_trucks),
+        )
 
     def _refresh_changed_truck(self, truck_id: int | None) -> None:
-        if truck_id is None or truck_id <= 0 or not self._trucks:
-            self.refresh_view()
-            return
-
-        # Reload only the edited truck from SQLite, then rebuild the derived view state from the in-memory list.
-        updated_truck = self.database.load_truck_with_kits(int(truck_id), active_only=True)
-        refreshed_trucks = [
-            truck for truck in self._trucks
-            if int(truck.id or -1) != int(truck_id)
-        ]
-        if updated_truck is not None and updated_truck.is_visible and not is_truck_complete(updated_truck):
-            refreshed_trucks.append(updated_truck)
-
-        state = self._build_dashboard_view_state(refreshed_trucks)
-        self._invalidate_gantt_layout_cache()
-        self._apply_dashboard_view_state(state)
+        self.refresh_view()
 
     def _on_manage_truck_plan(self) -> None:
         all_trucks = sort_trucks_natural(self.database.load_trucks_with_kits(active_only=True))
@@ -1739,6 +1850,13 @@ class MainWindow(QMainWindow):
         self._rescale_gantt_pixmaps()
         self._queue_gantt_pane_autosize()
 
+    def _handle_flow_tab_changed(self, _index: int) -> None:
+        self._queue_gantt_pane_autosize()
+
+    def resizeEvent(self, event):  # type: ignore[override]
+        super().resizeEvent(event)
+        self._queue_gantt_pane_autosize()
+
     def _create_gantt_context(self) -> dict[str, object]:
         content = QWidget()
         content_layout = QVBoxLayout(content)
@@ -1813,6 +1931,17 @@ class MainWindow(QMainWindow):
         if widget is None:
             return "__all__"
         return str(widget.property("gantt_key") or "__all__")
+
+    def _current_gantt_context(self) -> dict[str, object] | None:
+        contexts = getattr(self, "_gantt_contexts", None)
+        if not isinstance(contexts, dict):
+            return None
+        current_key = self._current_gantt_tab_key()
+        context = contexts.get(current_key)
+        if isinstance(context, dict):
+            return context
+        master_context = getattr(self, "_gantt_context", None)
+        return master_context if isinstance(master_context, dict) else None
 
     def _find_gantt_tab_index(self, key: str) -> int:
         tabs = getattr(self, "_gantt_tabs", None)
@@ -1958,7 +2087,8 @@ class MainWindow(QMainWindow):
         if layout is None:
             return
 
-        context = getattr(self, "_gantt_context", None)
+        active_context_key = self._current_gantt_tab_key()
+        context = self._current_gantt_context()
         if context is None:
             return
         meta_label = context["meta_label"]
@@ -1995,6 +2125,7 @@ class MainWindow(QMainWindow):
         cached_total_height = int(getattr(self, "_gantt_locked_total_height", -1))
         cached_left = int(getattr(self, "_gantt_locked_left_width", 0))
         cached_gantt = int(getattr(self, "_gantt_locked_height", 0))
+        cached_context_key = str(getattr(self, "_gantt_locked_context_key", "__all__") or "__all__")
 
         if (
             autosize_signature is not None
@@ -2003,6 +2134,7 @@ class MainWindow(QMainWindow):
             and total_height == cached_total_height
             and cached_left > 0
             and cached_gantt > 0
+            and active_context_key == cached_context_key
         ):
             target_left = cached_left
             target_right = max(0, total_width - target_left - main_handle)
@@ -2055,6 +2187,7 @@ class MainWindow(QMainWindow):
         self._gantt_locked_total_height = total_height
         self._gantt_locked_left_width = target_left
         self._gantt_locked_height = target_gantt
+        self._gantt_locked_context_key = active_context_key
 
     def _render_gantt_chart_png(
         self,
@@ -2203,6 +2336,7 @@ class MainWindow(QMainWindow):
         self._gantt_locked_total_height = -1
         self._gantt_locked_left_width = 0
         self._gantt_locked_height = 0
+        self._gantt_locked_context_key = "__all__"
         for context in getattr(self, "_gantt_contexts", {}).values():
             if not isinstance(context, dict):
                 continue

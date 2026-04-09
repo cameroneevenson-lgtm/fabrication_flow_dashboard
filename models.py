@@ -10,13 +10,39 @@ RELEASE_STATES = ["not_released", "released"]
 KIT_NAME_CANONICAL_BY_LOWER = {
     "body": "Body",
     "pumphouse": "Pumphouse",
+    "pump house": "Pumphouse",
     "console": "Console",
     "console pack": "Console",
     "interior": "Interior",
     "interior pack": "Interior",
     "exterior": "Exterior",
     "exterior pack": "Exterior",
+    "chassis": "Chassis",
+    "chassis pack": "Chassis",
+    "pump covering": "Pump Covering",
+    "pump coverings": "Pump Covering",
+    "pump mounts": "Pump Mounts",
+    "pump brackets": "Pump Brackets",
+    "step pack": "Step Pack",
+    "steps pack": "Step Pack",
+    "steps": "Step Pack",
+    "operational panels": "Operational Panels",
 }
+PRIMARY_FLOW_KIT_NAMES = (
+    "Body",
+    "Pumphouse",
+    "Console",
+    "Interior",
+    "Exterior",
+)
+SECONDARY_FLOW_KIT_NAMES = (
+    "Chassis",
+    "Pump Covering",
+    "Pump Mounts",
+    "Pump Brackets",
+    "Step Pack",
+    "Operational Panels",
+)
 
 
 @dataclass
@@ -115,6 +141,48 @@ DEFAULT_KIT_TEMPLATES = [
         id=None,
         kit_name="Exterior",
         kit_order=5,
+        is_main_kit=False,
+        is_active=True,
+    ),
+    KitTemplate(
+        id=None,
+        kit_name="Chassis",
+        kit_order=6,
+        is_main_kit=False,
+        is_active=True,
+    ),
+    KitTemplate(
+        id=None,
+        kit_name="Pump Covering",
+        kit_order=7,
+        is_main_kit=False,
+        is_active=True,
+    ),
+    KitTemplate(
+        id=None,
+        kit_name="Pump Mounts",
+        kit_order=8,
+        is_main_kit=False,
+        is_active=True,
+    ),
+    KitTemplate(
+        id=None,
+        kit_name="Pump Brackets",
+        kit_order=9,
+        is_main_kit=False,
+        is_active=True,
+    ),
+    KitTemplate(
+        id=None,
+        kit_name="Step Pack",
+        kit_order=10,
+        is_main_kit=False,
+        is_active=True,
+    ),
+    KitTemplate(
+        id=None,
+        kit_name="Operational Panels",
+        kit_order=11,
         is_main_kit=False,
         is_active=True,
     ),

@@ -910,27 +910,97 @@ class FabricationDatabase:
         )
 
     def _ensure_default_templates(self, connection: sqlite3.Connection) -> None:
-        row = connection.execute("SELECT COUNT(*) AS count FROM KitTemplate").fetchone()
-        if row["count"] > 0:
+        existing_rows = connection.execute(
+            """
+            SELECT id, kit_name, kit_order, is_main_kit, is_active
+            FROM KitTemplate
+            """
+        ).fetchall()
+        existing_by_name = {
+            canonicalize_kit_name(str(row["kit_name"] or "")).casefold(): row
+            for row in existing_rows
+            if str(row["kit_name"] or "").strip()
+        }
+        for template in DEFAULT_KIT_TEMPLATES:
+            normalized_name = canonicalize_kit_name(template.kit_name)
+            existing = existing_by_name.get(normalized_name.casefold())
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO KitTemplate (
+                        kit_name,
+                        kit_order,
+                        is_main_kit,
+                        is_active
+                    )
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        normalized_name,
+                        template.kit_order,
+                        int(template.is_main_kit),
+                        int(template.is_active),
+                    ),
+                )
+                continue
+
+            if (
+                str(existing["kit_name"] or "").strip() != normalized_name
+                or int(existing["kit_order"] or 0) != int(template.kit_order)
+                or int(existing["is_main_kit"] or 0) != int(template.is_main_kit)
+                or int(existing["is_active"] or 0) != int(template.is_active)
+            ):
+                connection.execute(
+                    """
+                    UPDATE KitTemplate
+                    SET kit_name = ?,
+                        kit_order = ?,
+                        is_main_kit = ?,
+                        is_active = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        normalized_name,
+                        int(template.kit_order),
+                        int(template.is_main_kit),
+                        int(template.is_active),
+                        int(existing["id"]),
+                    ),
+                )
+
+        self._ensure_default_kits_for_existing_trucks(connection)
+
+    @classmethod
+    def _ensure_default_kits_for_existing_trucks(cls, connection: sqlite3.Connection) -> None:
+        templates = cls._load_active_templates(connection)
+        if not templates:
             return
 
-        for template in DEFAULT_KIT_TEMPLATES:
-            connection.execute(
-                """
-                INSERT INTO KitTemplate (
-                    kit_name,
-                    kit_order,
-                    is_main_kit,
-                    is_active
-                )
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    template.kit_name,
-                    template.kit_order,
-                    int(template.is_main_kit),
-                    int(template.is_active),
-                ),
+        now_value = now_iso()
+        truck_rows = connection.execute("SELECT id FROM Truck").fetchall()
+        for truck_row in truck_rows:
+            truck_id = int(truck_row["id"])
+            existing_kit_name_keys = {
+                canonicalize_kit_name(str(row["kit_name"] or "")).casefold()
+                for row in connection.execute(
+                    "SELECT kit_name FROM TruckKit WHERE truck_id = ?",
+                    (truck_id,),
+                ).fetchall()
+                if str(row["kit_name"] or "").strip()
+            }
+            missing_templates = [
+                template
+                for template in templates
+                if canonicalize_kit_name(str(template["kit_name"] or "")).casefold()
+                not in existing_kit_name_keys
+            ]
+            if not missing_templates:
+                continue
+            cls._insert_default_kits_for_truck(
+                connection,
+                truck_id=truck_id,
+                templates=missing_templates,
+                now_value=now_value,
             )
 
     @staticmethod
@@ -939,6 +1009,11 @@ class FabricationDatabase:
             ("Console Pack", "Console"),
             ("Interior Pack", "Interior"),
             ("Exterior Pack", "Exterior"),
+            ("Pump House", "Pumphouse"),
+            ("Chassis Pack", "Chassis"),
+            ("Pump Coverings", "Pump Covering"),
+            ("Steps Pack", "Step Pack"),
+            ("Steps", "Step Pack"),
         )
         for old_name, new_name in rename_pairs:
             connection.execute(
