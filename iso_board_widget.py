@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen, QPolygonF
-from PySide6.QtWidgets import QSizePolicy, QToolTip, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 from dashboard_helpers import normalize_blocked_state_from_kit
 from gantt_overlay import (
@@ -1167,16 +1167,10 @@ class IsoBoardCanvas(QWidget):
         if hovered_key != self._hovered_key:
             self._hovered_key = hovered_key
             self.update()
-
-        if tower is None:
-            QToolTip.hideText()
-        else:
-            QToolTip.showText(event.globalPosition().toPoint(), tower.cell.tooltip_text, self)
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event):  # type: ignore[override]
         self._hovered_key = None
-        QToolTip.hideText()
         self.update()
         super().leaveEvent(event)
 

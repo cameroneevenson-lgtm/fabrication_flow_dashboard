@@ -608,6 +608,8 @@ def render_overlay_png(
     if dark_mode:
         plot_bg = "#061321"
         figure_bg = "#061321"
+        row_band_even = "#071827"
+        row_band_odd = "#0B2033"
         text_color = "#C6D8E6"
         line_color = "#92ABC1"
         back_fill = "#0D2133"
@@ -619,6 +621,8 @@ def render_overlay_png(
     else:
         plot_bg = "#FFFFFF"
         figure_bg = "#FFFFFF"
+        row_band_even = "#FFFFFF"
+        row_band_odd = "#F3F4F6"
         text_color = "#0F172A"
         line_color = "#4B5563"
         back_fill = "#F8FAFC"
@@ -634,6 +638,13 @@ def render_overlay_png(
         y = float(row_index) * float(row_step)
         y_positions.append(y)
         labels.append(str(row.row_label))
+
+        ax.axhspan(
+            y - (bar_height / 2.0),
+            y + (bar_height / 2.0),
+            color=row_band_even if row_index % 2 == 0 else row_band_odd,
+            zorder=0,
+        )
 
         for stage in FABRICATION_STAGES:
             bounds = row.windows.get(stage)

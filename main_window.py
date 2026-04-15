@@ -1900,6 +1900,7 @@ class MainWindow(QMainWindow):
             """
             QTableWidget {
                 background: #FFFFFF;
+                alternate-background-color: #F3F4F6;
                 border: 1px solid #CBD5E1;
                 border-radius: 6px;
                 font-family: Consolas, "Courier New", monospace;
