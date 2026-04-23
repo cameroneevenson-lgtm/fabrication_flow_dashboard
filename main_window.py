@@ -39,12 +39,17 @@ from PySide6.QtWidgets import (
 from board_widget import BoardWidget
 from branding import make_angled_logo_texture_pixmap, make_tiled_banner_pixmap
 from dashboard_attention import build_dashboard_attention_lines
-from dashboard_helpers import is_truck_complete, signal_state_for_level, sort_trucks_natural
+from dashboard_helpers import (
+    completing_kit_would_finish_truck,
+    is_truck_complete,
+    signal_state_for_level,
+    sort_trucks_natural,
+)
 from dashboard_publish import (
     DEFAULT_TEAMS_WEBHOOK_URL,
     build_dashboard_publish_snapshot,
     build_sized_dashboard_publish_payload,
-    load_active_dashboard_trucks,
+    load_dashboard_trucks,
     post_json_webhook,
     write_dashboard_payload,
 )
@@ -442,6 +447,12 @@ class MainWindow(QMainWindow):
         publish_button = QPushButton("Publish to Teams")
         publish_button.clicked.connect(self._publish_dashboard_snapshot_to_teams)
         controls.addWidget(publish_button)
+        self._show_completed_checkbox = QCheckBox("Show Completed Trucks")
+        self._show_completed_checkbox.setToolTip(
+            "Keep completed trucks visible on the dashboard so final completion stays easy to review or undo."
+        )
+        self._show_completed_checkbox.toggled.connect(lambda _checked: self.refresh_view())
+        controls.addWidget(self._show_completed_checkbox)
         self._minority_report_checkbox = QCheckBox("Dark Mode")
         self._minority_report_checkbox.setToolTip(
             "Enable transparent dark-mode chrome. Inspired by Minority Report."
@@ -819,6 +830,7 @@ class MainWindow(QMainWindow):
         trucks: list[Truck],
         *,
         include_secondary: bool,
+        include_completed: bool = False,
     ) -> list[Truck]:
         scoped_trucks: list[Truck] = []
         for truck in trucks:
@@ -833,7 +845,7 @@ class MainWindow(QMainWindow):
             if not scoped_kits:
                 continue
             scoped_truck = replace(truck, kits=list(scoped_kits))
-            if is_truck_complete(scoped_truck):
+            if not include_completed and is_truck_complete(scoped_truck):
                 continue
             scoped_trucks.append(scoped_truck)
         return scoped_trucks
@@ -965,14 +977,19 @@ class MainWindow(QMainWindow):
 
     def refresh_view(self) -> None:
         self._invalidate_gantt_layout_cache()
-        all_trucks = load_active_dashboard_trucks(self.database)
+        include_completed = bool(
+            getattr(self, "_show_completed_checkbox", None) and self._show_completed_checkbox.isChecked()
+        )
+        all_trucks = load_dashboard_trucks(self.database, include_completed=include_completed)
         primary_trucks = self._filter_trucks_for_secondary_scope(
             all_trucks,
             include_secondary=False,
+            include_completed=include_completed,
         )
         secondary_trucks = self._filter_trucks_for_secondary_scope(
             all_trucks,
             include_secondary=True,
+            include_completed=include_completed,
         )
         primary_state = self._build_dashboard_view_state(primary_trucks)
         secondary_state = self._build_dashboard_view_state(secondary_trucks)
@@ -1019,6 +1036,8 @@ class MainWindow(QMainWindow):
             front_stage_id=int(values["front_stage_id"]),
             back_stage_id=int(values["back_stage_id"]),
         )
+        if not self._confirm_truck_completion(truck, kit, target_stage_id=front_stage_id):
+            return
         try:
             self.database.update_truck_kit(
                 kit_id=kit_id,
@@ -1071,6 +1090,8 @@ class MainWindow(QMainWindow):
             if bool(getattr(kit, "keep_tail_at_head", True))
             else int(getattr(kit, "back_position", FabricationDatabase._entry_position_for_stage(back_stage_id)))
         )
+        if not self._confirm_truck_completion(truck, kit, target_stage_id=front_stage_id):
+            return
 
         try:
             self.database.update_truck_kit(
@@ -1092,6 +1113,28 @@ class MainWindow(QMainWindow):
             f"Moved {truck.truck_number} {kit.kit_name} to {stage_label(target_stage)}",
             3000,
         )
+
+    def _confirm_truck_completion(self, truck: Truck, kit: TruckKit, *, target_stage_id: int) -> bool:
+        if not completing_kit_would_finish_truck(
+            truck,
+            kit_id=kit.id,
+            target_stage_id=target_stage_id,
+        ):
+            return True
+
+        result = QMessageBox.question(
+            self,
+            "Complete Final Kit?",
+            (
+                f"{truck.truck_number} will become fully complete if you finish {kit.kit_name}.\n\n"
+                "That truck will disappear from the default dashboard view.\n"
+                "You can still bring it back with Show Completed Trucks and move a kit out of Complete if needed.\n\n"
+                "Complete this final kit now?"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return result == QMessageBox.Yes
 
     def _on_iso_kit_focused(self, kit_id: int) -> None:
         result = self._kit_index.get(int(kit_id))

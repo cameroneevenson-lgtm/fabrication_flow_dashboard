@@ -31,6 +31,48 @@ def is_truck_complete(truck: Truck) -> bool:
     return all(stage_from_id(kit.front_stage_id) == Stage.COMPLETE for kit in active_kits)
 
 
+def filter_dashboard_trucks(
+    trucks: list[Truck],
+    *,
+    include_completed: bool = False,
+) -> list[Truck]:
+    return [
+        truck
+        for truck in sort_trucks_natural(list(trucks))
+        if truck.is_visible and (include_completed or not is_truck_complete(truck))
+    ]
+
+
+def completing_kit_would_finish_truck(
+    truck: Truck,
+    *,
+    kit_id: int | None,
+    target_stage_id: int | Stage | None,
+) -> bool:
+    if stage_from_id(target_stage_id) != Stage.COMPLETE:
+        return False
+
+    active_kits = [kit for kit in truck.kits if kit.is_active]
+    if not active_kits or kit_id is None:
+        return False
+
+    target_kit: TruckKit | None = None
+    for kit in active_kits:
+        if kit.id is not None and int(kit.id) == int(kit_id):
+            target_kit = kit
+            break
+
+    if target_kit is None:
+        return False
+    if stage_from_id(target_kit.front_stage_id) == Stage.COMPLETE:
+        return False
+
+    return all(
+        kit is target_kit or stage_from_id(kit.front_stage_id) == Stage.COMPLETE
+        for kit in active_kits
+    )
+
+
 def normalize_blocked_state(
     *,
     blocked: bool | None = None,

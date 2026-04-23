@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from dashboard_helpers import is_truck_complete, sort_trucks_natural
+from dashboard_helpers import filter_dashboard_trucks, sort_trucks_natural
 from database import FabricationDatabase
 from metrics import DashboardMetrics, SnapshotMetrics, compute_dashboard_metrics, compute_snapshot_metrics
 from models import Truck
@@ -31,10 +31,16 @@ class DashboardPublishSnapshot:
 
 
 def load_active_dashboard_trucks(database: FabricationDatabase) -> list[Truck]:
-    loaded_trucks = sort_trucks_natural(database.load_trucks_with_kits(active_only=True))
-    return [
-        truck for truck in loaded_trucks if truck.is_visible and not is_truck_complete(truck)
-    ]
+    return load_dashboard_trucks(database, include_completed=False)
+
+
+def load_dashboard_trucks(
+    database: FabricationDatabase,
+    *,
+    include_completed: bool,
+) -> list[Truck]:
+    loaded_trucks = database.load_trucks_with_kits(active_only=True)
+    return filter_dashboard_trucks(loaded_trucks, include_completed=include_completed)
 
 
 def build_dashboard_publish_snapshot(
