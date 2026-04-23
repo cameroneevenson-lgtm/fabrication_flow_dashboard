@@ -8,19 +8,34 @@ A PySide6 application for tracking fabrication flow and schedule signals.
    ```powershell
    cd c:\Tools\fabrication_flow_dashboard
    ```
-2. Run the app:
+2. Create or update the shared virtual environment used by the repo launch scripts:
    ```powershell
-   .\.venv\Scripts\python.exe app.py
+   py -3.12 -m venv C:\Tools\.venv
+   C:\Tools\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
    ```
-3. For live reload (preferred):
+3. Run the app:
+   ```powershell
+   C:\Tools\.venv\Scripts\python.exe app.py
+   ```
+4. For live reload (preferred):
    ```powershell
    .\dev_run.bat
    ```
    During hot reload, a top banner appears. Click `Cancel Reload` on the banner within 10 seconds to keep the current session; otherwise the app auto-reloads.
-4. Compatibility command (same launcher behavior):
+5. Compatibility command (same launcher behavior):
    ```powershell
-   .\.venv\Scripts\python.exe watch_and_run.py
+   C:\Tools\.venv\Scripts\python.exe watch_and_run.py
    ```
+
+## Environment and dependencies
+
+- The project currently uses a shared virtual environment at `C:\Tools\.venv`.
+- `requirements.txt` contains the direct runtime dependency set used by the app.
+- `requirements-dev.txt` adds the test runner used by the repo.
+- Run the full test suite with:
+  ```powershell
+  C:\Tools\.venv\Scripts\python.exe -m pytest
+  ```
 
 ## Truck input (V1)
 
@@ -104,19 +119,19 @@ Optional link configuration:
 Generate the webhook JSON payload from the same publish flow used by the UI:
 
 ```powershell
-.\.venv\Scripts\python.exe export_ops_snapshot_teams_card.py --output _runtime\teams_dashboard_card.json
+C:\Tools\.venv\Scripts\python.exe export_ops_snapshot_teams_card.py --output _runtime\teams_dashboard_card.json
 ```
 
 Generate and post directly to a webhook:
 
 ```powershell
-.\.venv\Scripts\python.exe export_ops_snapshot_teams_card.py --webhook-url "<YOUR_WEBHOOK_URL>"
+C:\Tools\.venv\Scripts\python.exe export_ops_snapshot_teams_card.py --webhook-url "<YOUR_WEBHOOK_URL>"
 ```
 
 Provide explicit artifact URLs from CLI when needed:
 
 ```powershell
-.\.venv\Scripts\python.exe export_ops_snapshot_teams_card.py `
+C:\Tools\.venv\Scripts\python.exe export_ops_snapshot_teams_card.py `
   --summary-url "https://contoso.sharepoint.com/sites/fab/summary.html" `
   --gantt-url "https://contoso.sharepoint.com/sites/fab/gantt.png" `
   --status-url "https://contoso.sharepoint.com/sites/fab/status.json"
