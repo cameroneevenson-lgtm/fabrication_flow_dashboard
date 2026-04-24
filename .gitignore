@@ -2,3 +2,4 @@ __pycache__/
 *.py[cod]
 *.db
 .venv/
+fabrication_flow_dashboard_launch.log
