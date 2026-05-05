@@ -1,25 +1,20 @@
 {
-  "published_at_utc": "2026-04-01T19:44:43+00:00",
+  "published_at_utc": "2026-04-30T16:59:03+00:00",
   "summary": {
     "active_trucks": 4,
-    "laser": "dry",
-    "bend_buffer": "dry",
-    "weld_feed_a": "low",
-    "weld_feed_b": "low",
-    "kits_behind_schedule": 4,
-    "late_releases": 4,
-    "blocked_kits": 1
+    "laser": "low",
+    "bend_buffer": "healthy",
+    "weld_feed_a": "watch",
+    "weld_feed_b": "healthy",
+    "kits_behind_schedule": 10,
+    "late_releases": 6,
+    "blocked_kits": 0
   },
   "risk_summary": [
     {
       "priority": 96,
       "title": "Engineering release is holding work start",
-      "detail": "4 kit(s) past planned start; oldest 4 weeks late (F56139 Body)."
-    },
-    {
-      "priority": 85,
-      "title": "Bend buffer dry",
-      "detail": "No released kits are in laser/bend."
+      "detail": "6 kit(s) past planned start; oldest 3 weeks late (F56724 Console)."
     }
   ],
   "truck_rows": [
@@ -27,33 +22,33 @@
       "truck_number": "F55334",
       "main_stage": "Complete",
       "sync_state": "In Sync",
-      "risk_category": "Blocked",
-      "issue_summary": "1 blocked kit(s).",
+      "risk_category": "Fabrication Behind",
+      "issue_summary": "1 kit(s) behind master schedule.",
       "tone": "problem"
     },
     {
       "truck_number": "F56139",
-      "main_stage": "Release",
+      "main_stage": "Complete",
+      "sync_state": "In Sync",
+      "risk_category": "Fabrication Behind",
+      "issue_summary": "2 kit(s) behind master schedule.",
+      "tone": "problem"
+    },
+    {
+      "truck_number": "F56724",
+      "main_stage": "Weld",
       "sync_state": "Behind",
       "risk_category": "Late Release",
       "issue_summary": "3 kit(s) late release.",
       "tone": "problem"
     },
     {
-      "truck_number": "F56724",
+      "truck_number": "F58561",
       "main_stage": "Release",
       "sync_state": "Behind",
       "risk_category": "Late Release",
-      "issue_summary": "1 kit(s) late release.",
+      "issue_summary": "3 kit(s) late release.",
       "tone": "problem"
-    },
-    {
-      "truck_number": "F58561",
-      "main_stage": "Release",
-      "sync_state": "In Sync",
-      "risk_category": "In Sync",
-      "issue_summary": "None.",
-      "tone": "ok"
     }
   ],
   "artifact_links": {
